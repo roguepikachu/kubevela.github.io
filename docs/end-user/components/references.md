@@ -743,7 +743,7 @@ The same `auth` block works for HTTPS repos (`source` + `repoURL`) and direct `.
  chart | Chart source configuration | [chart](#chart-helmchart) | true |  
  release | Release configuration (optional - uses context defaults) | [release](#release-helmchart) | false |  
  values | Inline values merged with the highest priority; override everything in valuesFrom. | map[string]interface{} | false |  
- valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
+ valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. On every reconcile the controller computes a content fingerprint over all referenced sources; an external edit to a referenced ConfigMap or Secret triggers a `helm upgrade` automatically on the next reconcile (default resync ~5 min). Sources are read from the control-plane cluster regardless of where the chart is deployed. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
  healthStatus | Criteria for declaring the component healthy. Each entry names a resource kind and a condition to check. When all entries pass, the workflow step is marked complete. If omitted, KubeVela uses its default readiness heuristic. | [[]healthStatus](#healthstatus-helmchart) | false |  
  options | Rendering options | [options](#options-helmchart) | false |  
 
@@ -770,7 +770,7 @@ The same `auth` block works for HTTPS repos (`source` + `repoURL`) and direct `.
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
  name | Name of the Secret | string | true |  
- namespace | Namespace of the Secret. Defaults to the Application namespace. The vela-core controller must have RBAC access to read Secrets in this namespace. | string | false |  
+ namespace | Namespace of the Secret. Defaults to the release namespace, which itself defaults to the Application namespace when `release.namespace` is unset. Must be either the release namespace or the Application namespace; cross-namespace references are rejected. | string | false |  
 
 Supported Secret types:
 
@@ -778,8 +778,13 @@ Supported Secret types:
 |---|---|---|
 | `kubernetes.io/basic-auth` | `username` + `password` keys | HTTPS Helm repo, OCI registry username/password |
 | `kubernetes.io/dockerconfigjson` | `.dockerconfigjson` key (standard Docker config) | OCI registry with Docker-format credentials |
+| `kubernetes.io/tls` | `tls.crt`, `tls.key`, optional `ca.crt` | Mutual TLS client authentication |
 | `Opaque` with `username`/`password` | `username` + `password` keys | HTTPS Helm repo, OCI registry |
-| `Opaque` with `token` | `token` key | Bearer token auth (Nexus, Artifactory, custom proxies) |
+| `Opaque` with `token` | `token` key | Bearer token auth (HTTPS Helm repos and direct `.tgz` URLs only; see note below) |
+
+An `Opaque` Secret can also include these optional TLS fields: `caFile` (custom CA bundle), `certFile` + `keyFile` (client certificate), `insecureSkipTLS` (skip server certificate verification), and `insecurePlainHTTP` (OCI sources only; use plain HTTP instead of HTTPS).
+
+> **Note on Bearer tokens:** Bearer tokens work on HTTPS Helm repositories and direct `.tgz` URLs only. They must not be used with OCI registries (OCI performs its own Basic-to-Bearer exchange per the Distribution Spec). They must not be combined with `insecureSkipTLS` (RFC 6750 requires TLS) and must not appear alongside `username`/`password` keys in the same Secret.
 
 
 #### valuesFrom (helmchart)
@@ -789,7 +794,7 @@ Supported Secret types:
  kind | Source kind. Only `Secret` and `ConfigMap` are supported. `OCIRepository` is not yet supported. | "Secret" or "ConfigMap" | true |  
  name | Name of the Secret or ConfigMap. | string | true |  
  namespace | Namespace of the Secret or ConfigMap. Defaults to the release namespace. An explicit value must match either the release namespace or the Application's own namespace; other namespaces are rejected to prevent cross-tenant reads via the controller's cluster-wide RBAC. | string | false |  
- key | Key inside `.data` whose value is parsed as YAML. | string | false | "values.yaml" 
+ key | Key inside `.data` whose value is parsed as YAML. Only `.data` is read; `ConfigMap.binaryData` is rejected. | string | false | "values.yaml" 
  optional | If true, a missing Secret/ConfigMap or missing key is skipped silently. Parse errors and permission errors still fail the render. | bool | false | false 
 
 
@@ -803,7 +808,9 @@ Supported Secret types:
 
 #### healthStatus (helmchart)
 
-Each entry in the `healthStatus` array names one Kubernetes resource and the condition that must be `True` for that resource to be considered healthy. All entries must pass for the component to be marked healthy.
+Each entry in the `healthStatus` array names one Kubernetes resource and the condition that must be `True` for that resource to be considered healthy. All entries must pass for the component to be marked healthy. If omitted, the component is considered healthy immediately after dispatch.
+
+Only use resource kinds that expose `.status.conditions` (Deployment, StatefulSet, Job, Pod, Node, and most CRD-based resources). Resources that do not expose conditions such as Service or ConfigMap will always evaluate to unhealthy.
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
@@ -823,8 +830,8 @@ Each entry in the `healthStatus` array names one Kubernetes resource and the con
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
- type | Condition type to check. Accepts any Kubernetes condition string, e.g. `Ready`, `Available`, `Progressing`. | string | true |  
- status | Expected condition status | "True" or "False" | false | "True" 
+ type | Condition type to check. Accepts any Kubernetes condition string. Common values: `Available` and `Progressing` for Deployments; `Available` for StatefulSets; `Ready` for Pods; `Complete` or `Failed` for Jobs. | string | true |  
+ status | Expected condition status. Use `"False"` for conditions like `Progressing` where the healthy state is `False`. | "True" or "False" | false | "True" 
 
 
 #### options (helmchart)
@@ -838,7 +845,8 @@ Each entry in the `healthStatus` array names one Kubernetes resource and the con
  timeout | Rendering timeout | string | false | "5m" 
  maxHistory | Revisions to keep | int | false | 10 
  atomic | Rollback on failure | bool | false | false 
- wait | Wait for resources to become ready before marking the workflow step complete | bool | false | true 
+ wait | Wait for resources to become ready before marking the workflow step complete | bool | false | false 
+ waitTimeout | How long to wait for resources when `wait` is true | string | false | "10m" 
  force | Force resource updates | bool | false | false 
  recreatePods | Recreate pods on upgrade | bool | false | false 
  cleanupOnFail | Cleanup on failure | bool | false | false 
