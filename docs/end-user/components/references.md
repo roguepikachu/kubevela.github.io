@@ -838,18 +838,16 @@ Only use resource kinds that expose `.status.conditions` (Deployment, StatefulSe
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
- includeCRDs | Include CRD resources from the chart | bool | false | true 
  skipTests | Skip test resources | bool | false | true 
  skipHooks | Skip hook resources | bool | false | false 
  createNamespace | Create namespace if it doesn't exist | bool | false | true 
- timeout | Rendering timeout | string | false | "5m" 
- maxHistory | Revisions to keep | int | false | 10 
+ timeout | Rendering and wait timeout | string | false | "5m" 
+ maxHistory | Revisions to keep. Takes effect on upgrade; ignored on first install. | int | false | 10 
  atomic | Rollback on failure | bool | false | false 
  wait | Wait for resources to become ready before marking the workflow step complete | bool | false | false 
- waitTimeout | How long to wait for resources when `wait` is true | string | false | "10m" 
- force | Force resource updates | bool | false | false 
- recreatePods | Recreate pods on upgrade | bool | false | false 
- cleanupOnFail | Cleanup on failure | bool | false | false 
+ force | Force resource updates. Takes effect on upgrade; ignored on first install. | bool | false | false 
+ recreatePods | Recreate pods on upgrade. Ignored on first install. | bool | false | false 
+ cleanupOnFail | Cleanup on failure. Takes effect on upgrade; ignored on first install. | bool | false | false 
  cache | Chart cache tuning | [cache](#cache-helmchart) | false |  
 
 
