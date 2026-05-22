@@ -606,11 +606,11 @@ spec:
 
 ## Helmchart
 
-> **Note:** There is a known limitation with pre-delete and post-delete hook functionality that will be addressed in later releases. Currently, only public chart repositories are supported — authentication for private repositories is on the roadmap.
+> **Note:** `pre-delete` and `post-delete` Helm hooks do not execute. KubeVela's GC deletes resources directly via the Kubernetes API and never calls `helm uninstall`, so delete-phase hooks are bypassed entirely. Install and upgrade hooks (`pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`) work correctly.
 
 ### Description
 
-Deploy Helm charts natively in KubeVela
+Render and deploy Helm charts directly using the Helm Go SDK, without requiring the FluxCD addon. Charts can be sourced from HTTP(S) repositories, OCI registries, or direct `.tgz` URLs, and integrate with KubeVela's standard features including multi-cluster placement, workflow steps, and Application revision tracking.
 
 ### Examples (helmchart)
 
@@ -628,6 +628,8 @@ spec:
           source: oci://ghcr.io/org/charts/app
           version: "1.0.0"
 ```
+
+After the Application is reconciled you will see a ConfigMap named `{releaseName}-helm-release` in the release namespace. KubeVela creates this as its stable primary output to track release metadata. It is managed by the controller and should not be edited or deleted manually.
 
 Merge values from a ConfigMap and a Secret, with inline values taking precedence over both:
 
@@ -686,7 +688,52 @@ spec:
           skipTests: true
 ```
 
-The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memory: 512Mi` (Secret overlay wins over the ConfigMap on the conflict), and `resources.limits.cpu: 100m` (preserved from the ConfigMap — the Secret didn't touch it).
+The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memory: 512Mi` (Secret overlay wins over the ConfigMap on the conflict), and `resources.limits.cpu: 100m` (preserved from the ConfigMap; the Secret didn't touch it).
+
+#### Authenticating with private chart registries
+
+Add `chart.auth.secretRef` to point at a Secret in the vela-core namespace (`vela-system` by default). The Secret type controls how credentials are extracted:
+
+| Secret type | Keys read | Use case |
+|---|---|---|
+| `kubernetes.io/basic-auth` | `username`, `password` | HTTPS Helm repo, OCI registry |
+| `kubernetes.io/dockerconfigjson` | `.dockerconfigjson` | OCI registry (Docker-format config) |
+| `Opaque` with `username`/`password` | `username`, `password` | HTTPS Helm repo, OCI registry |
+| `Opaque` with `token` | `token` | Bearer token auth (Nexus, Artifactory) |
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-creds
+  namespace: vela-system
+type: kubernetes.io/basic-auth
+stringData:
+  username: my-username
+  password: my-password-or-token
+---
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: private-chart
+spec:
+  components:
+    - name: my-app
+      type: helmchart
+      properties:
+        chart:
+          source: oci://ghcr.io/my-org/charts/my-app
+          version: "1.0.0"
+          auth:
+            secretRef:
+              name: registry-creds
+              namespace: vela-system
+        release:
+          name: my-app
+          namespace: default
+```
+
+The same `auth` block works for HTTPS repos (`source` + `repoURL`) and direct `.tgz` URLs. When you rotate the Secret, the cache key updates automatically and the next reconcile pulls a fresh copy of the chart.
 
 ### Specification (helmchart)
 
@@ -696,7 +743,8 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
  chart | Chart source configuration | [chart](#chart-helmchart) | true |  
  release | Release configuration (optional - uses context defaults) | [release](#release-helmchart) | false |  
  values | Inline values merged with the highest priority; override everything in valuesFrom. | map[string]interface{} | false |  
- valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. Sources are read once per reconcile — editing a referenced ConfigMap/Secret does NOT trigger a new reconcile, so bump the Application spec to roll out new values. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
+ valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. On every reconcile the controller computes a content fingerprint over all referenced sources; an external edit to a referenced ConfigMap or Secret triggers a `helm upgrade` automatically on the next reconcile (default resync ~5 min). Sources are read from the control-plane cluster regardless of where the chart is deployed. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
+ healthStatus | Criteria for declaring the component healthy. Each entry names a resource kind and a condition to check. When all entries pass, the workflow step is marked complete. If omitted, KubeVela uses its default readiness heuristic. | [[]healthStatus](#healthstatus-helmchart) | false |  
  options | Rendering options | [options](#options-helmchart) | false |  
 
 
@@ -707,16 +755,46 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
  source | Chart location - automatically detected based on format (OCI, Direct URL, Repo chart) | string | true |  
  repoURL | Repository URL for repository-based charts | string | false |  
  version | Version/tag for repository and OCI charts (ignored for direct URLs) | string | false | "latest" 
+ auth | Credentials for private chart sources | [auth](#auth-helmchart) | false |  
+
+
+#### auth (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ secretRef | Reference to the Secret holding credentials | [secretRef](#secretref-helmchart) | true |  
+
+
+#### secretRef (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ name | Name of the Secret | string | true |  
+ namespace | Namespace of the Secret. Defaults to the release namespace, which itself defaults to the Application namespace when `release.namespace` is unset. Must be either the release namespace or the Application namespace; cross-namespace references are rejected. | string | false |  
+
+Supported Secret types:
+
+| Secret type | Credentials read | Use case |
+|---|---|---|
+| `kubernetes.io/basic-auth` | `username` + `password` keys | HTTPS Helm repo, OCI registry username/password |
+| `kubernetes.io/dockerconfigjson` | `.dockerconfigjson` key (standard Docker config) | OCI registry with Docker-format credentials |
+| `kubernetes.io/tls` | `tls.crt`, `tls.key`, optional `ca.crt` | Mutual TLS client authentication |
+| `Opaque` with `username`/`password` | `username` + `password` keys | HTTPS Helm repo, OCI registry |
+| `Opaque` with `token` | `token` key | Bearer token auth (HTTPS Helm repos and direct `.tgz` URLs only; see note below) |
+
+An `Opaque` Secret can also include these optional TLS fields: `caFile` (custom CA bundle), `certFile` + `keyFile` (client certificate), `insecureSkipTLS` (skip server certificate verification), and `insecurePlainHTTP` (OCI sources only; use plain HTTP instead of HTTPS).
+
+> **Note on Bearer tokens:** Bearer tokens work on HTTPS Helm repositories and direct `.tgz` URLs only. They must not be used with OCI registries (OCI performs its own Basic-to-Bearer exchange per the Distribution Spec). They must not be combined with `insecureSkipTLS` (RFC 6750 requires TLS) and must not appear alongside `username`/`password` keys in the same Secret.
 
 
 #### valuesFrom (helmchart)
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
- kind | Source kind. Only `Secret` and `ConfigMap` are supported; `OCIRepository` is reserved for a future release. | "Secret" or "ConfigMap" | true |  
+ kind | Source kind. Only `Secret` and `ConfigMap` are supported. `OCIRepository` is not yet supported. | "Secret" or "ConfigMap" | true |  
  name | Name of the Secret or ConfigMap. | string | true |  
- namespace | Namespace of the Secret or ConfigMap. Defaults to the release namespace. An explicit value must match either the release namespace or the Application's own namespace — other namespaces are rejected to prevent cross-tenant reads via the controller's cluster-wide RBAC. | string | false |  
- key | Key inside `.data` whose value is parsed as YAML. | string | false | "values.yaml" 
+ namespace | Namespace of the Secret or ConfigMap. Defaults to the release namespace. An explicit value must match either the release namespace or the Application's own namespace; other namespaces are rejected to prevent cross-tenant reads via the controller's cluster-wide RBAC. | string | false |  
+ key | Key inside `.data` whose value is parsed as YAML. Only `.data` is read; `ConfigMap.binaryData` is rejected. | string | false | "values.yaml" 
  optional | If true, a missing Secret/ConfigMap or missing key is skipped silently. Parse errors and permission errors still fail the render. | bool | false | false 
 
 
@@ -728,6 +806,34 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
  namespace | Target namespace (defaults to Application namespace) | string | false |  
 
 
+#### healthStatus (helmchart)
+
+Each entry in the `healthStatus` array names one Kubernetes resource and the condition that must be `True` for that resource to be considered healthy. All entries must pass for the component to be marked healthy. If omitted, the component is considered healthy immediately after dispatch.
+
+Only use resource kinds that expose `.status.conditions` (Deployment, StatefulSet, Job, Pod, Node, and most CRD-based resources). Resources that do not expose conditions such as Service or ConfigMap will always evaluate to unhealthy.
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ resource | Resource to check | [resource](#resource-helmchart) | true |  
+ condition | Condition to evaluate | [condition](#condition-helmchart) | true |  
+
+
+##### resource (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ kind | Kubernetes resource kind (e.g. `Deployment`, `StatefulSet`) | string | true |  
+ name | Resource name. If omitted, any resource of the matching kind satisfies the check. | string | false |  
+
+
+##### condition (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ type | Condition type to check. Accepts any Kubernetes condition string. Common values: `Available` and `Progressing` for Deployments; `Available` for StatefulSets; `Ready` for Pods; `Complete` or `Failed` for Jobs. | string | true |  
+ status | Expected condition status. Use `"False"` for conditions like `Progressing` where the healthy state is `False`. | "True" or "False" | false | "True" 
+
+
 #### options (helmchart)
 
  Name | Description | Type | Required | Default 
@@ -735,13 +841,41 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
  skipTests | Skip test resources | bool | false | true 
  skipHooks | Skip hook resources | bool | false | false 
  createNamespace | Create namespace if it doesn't exist | bool | false | true 
- timeout | Rendering timeout | string | false | "5m" 
- maxHistory | Revisions to keep | int | false | 10 
+ timeout | Rendering and wait timeout | string | false | "5m" 
+ maxHistory | Revisions to keep. Takes effect on upgrade; ignored on first install. | int | false | 10 
  atomic | Rollback on failure | bool | false | false 
- wait | Wait for resources | bool | false | false 
- force | Force resource updates | bool | false | false 
- recreatePods | Recreate pods on upgrade | bool | false | false 
- cleanupOnFail | Cleanup on failure | bool | false | false 
+ wait | Wait for resources to become ready before marking the workflow step complete | bool | false | false 
+ force | Force resource updates. Takes effect on upgrade; ignored on first install. | bool | false | false 
+ recreatePods | Recreate pods on upgrade. Ignored on first install. | bool | false | false 
+ cleanupOnFail | Cleanup on failure. Takes effect on upgrade; ignored on first install. | bool | false | false 
+ cache | Chart cache tuning | [cache](#cache-helmchart) | false |  
+
+
+#### cache (helmchart)
+
+The chart cache is in-memory and scoped to the vela-core controller pod. It resets on controller restart. By default each Application component gets its own cache namespace; set `key` to share a cache entry across components that use the same chart.
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ key | Cache key prefix. Defaults to `{appName}-{componentName}`. Set a shared value to reuse a cached chart across multiple components. | string | false |  
+ ttl | TTL for all versions, overriding the automatic immutable/mutable detection. Set to `"0"` to disable caching entirely. | string | false |  
+ immutableTTL | TTL for pinned (immutable) versions such as `1.2.3` or `v2.0.0`. | string | false | "24h" 
+ mutableTTL | TTL for floating versions such as `latest`, `dev`, or `-SNAPSHOT`. | string | false | "5m" 
+
+
+### Known limitations (helmchart)
+
+**Delete hooks do not fire**
+
+`pre-delete` and `post-delete` Helm hooks are never executed. KubeVela's GC deletes resources individually via the Kubernetes API without calling `helm uninstall`. Charts that rely on cleanup Jobs (database migrations, deregistration webhooks) will not run them on Application deletion. As a workaround, run those Jobs manually before deleting the Application.
+
+**CRDs from the `crds/` directory are not cleaned up on deletion**
+
+Helm never deletes CRDs installed from a chart's `crds/` directory. This is Helm's own design to prevent data loss. When you delete a helmchart Application, any CRDs that came from the `crds/` directory are left behind and must be cleaned up manually. CRDs that a chart ships as regular template resources are tracked by KubeVela and deleted with the Application.
+
+**Chart cache is in-memory only**
+
+The chart cache lives in the vela-core controller pod's memory. A controller restart clears it, causing the next reconcile for each component to re-fetch its chart. This produces a short burst of chart downloads after a controller upgrade or pod eviction.
 
 
 ## K8s-Objects
