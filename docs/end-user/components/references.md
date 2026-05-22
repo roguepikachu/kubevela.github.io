@@ -743,7 +743,7 @@ The same `auth` block works for HTTPS repos (`source` + `repoURL`) and direct `.
  chart | Chart source configuration | [chart](#chart-helmchart) | true |  
  release | Release configuration (optional - uses context defaults) | [release](#release-helmchart) | false |  
  values | Inline values merged with the highest priority; override everything in valuesFrom. | map[string]interface{} | false |  
- valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. Sources are read once per reconcile. Editing a referenced ConfigMap/Secret does NOT trigger a new reconcile, so bump the Application spec to roll out new values. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
+ valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
  healthStatus | Criteria for declaring the component healthy. Each entry names a resource kind and a condition to check. When all entries pass, the workflow step is marked complete. If omitted, KubeVela uses its default readiness heuristic. | [[]healthStatus](#healthstatus-helmchart) | false |  
  options | Rendering options | [options](#options-helmchart) | false |  
 
@@ -865,52 +865,11 @@ The chart cache is in-memory and scoped to the vela-core controller pod. It rese
 
 **CRDs from the `crds/` directory are not cleaned up on deletion**
 
-Helm never deletes CRDs it installed from a chart's `crds/` directory (by design, to prevent data loss). When you delete a helmchart Application, those CRDs are left behind. Affected charts include kube-prometheus-stack, ARC controller, and others that bundle CRDs in the `crds/` directory rather than in chart templates. CRDs installed via chart templates (Istio, cert-manager) are tracked normally and are cleaned up.
+Helm never deletes CRDs installed from a chart's `crds/` directory. This is Helm's own design to prevent data loss. When you delete a helmchart Application, any CRDs that came from the `crds/` directory are left behind and must be cleaned up manually. CRDs that a chart ships as regular template resources are tracked by KubeVela and deleted with the Application.
 
 **Chart cache is in-memory only**
 
 The chart cache lives in the vela-core controller pod's memory. A controller restart clears it, causing the next reconcile for each component to re-fetch its chart. This produces a short burst of chart downloads after a controller upgrade or pod eviction.
-
-**Editing a referenced ConfigMap or Secret does not trigger reconcile**
-
-When using `valuesFrom`, editing the referenced ConfigMap or Secret does not automatically re-render the chart. Touch any field under the Application's `.spec` (adding or changing an annotation works) to force a new reconcile.
-
-**Migrating from the FluxCD addon**
-
-The FluxCD `helm` component type uses a flat property structure. The native `helmchart` type restructures these under `chart`, `release`, and `values`:
-
-```yaml
-# Before (FluxCD addon)
-- name: database
-  type: helm
-  properties:
-    repoType: helm
-    url: https://charts.bitnami.com/bitnami
-    chart: postgresql
-    version: "12.1.0"
-    targetNamespace: default
-    releaseName: postgres
-    values:
-      auth:
-        database: myapp
-
-# After (native helmchart)
-- name: database
-  type: helmchart
-  properties:
-    chart:
-      source: postgresql
-      repoURL: https://charts.bitnami.com/bitnami
-      version: "12.1.0"
-    release:
-      name: postgres
-      namespace: default
-    values:
-      auth:
-        database: myapp
-```
-
-If an existing vanilla Helm release is already running in the cluster, the controller adopts it automatically on first reconcile with zero pod disruption.
 
 
 ## K8s-Objects
