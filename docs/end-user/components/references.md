@@ -690,27 +690,30 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
 
 #### Authenticating with private chart registries
 
-KubeVela supports private Helm repositories and OCI registries through a `secretRef` on the `chart` block. The Secret is read by the vela-core controller, so it must live in the vela-core namespace (`vela-system` by default) unless the `namespace` field overrides it.
+Add `chart.auth.secretRef` to point at a Secret in the vela-core namespace (`vela-system` by default). The Secret type controls how credentials are extracted:
 
-**OCI private registry (Docker Hub, GHCR, ECR, etc.)**
-
-Create a `kubernetes.io/basic-auth` Secret with your registry username and password:
+| Secret type | Keys read | Use case |
+|---|---|---|
+| `kubernetes.io/basic-auth` | `username`, `password` | HTTPS Helm repo, OCI registry |
+| `kubernetes.io/dockerconfigjson` | `.dockerconfigjson` | OCI registry (Docker-format config) |
+| `Opaque` with `username`/`password` | `username`, `password` | HTTPS Helm repo, OCI registry |
+| `Opaque` with `token` | `token` | Bearer token auth (Nexus, Artifactory) |
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ghcr-creds
+  name: registry-creds
   namespace: vela-system
 type: kubernetes.io/basic-auth
 stringData:
-  username: my-github-username
-  password: ghp_xxxxxxxxxxxxxxxxxxxx   # GitHub PAT with read:packages scope
+  username: my-username
+  password: my-password-or-token
 ---
 apiVersion: core.oam.dev/v1beta1
 kind: Application
 metadata:
-  name: private-oci-chart
+  name: private-chart
 spec:
   components:
     - name: my-app
@@ -718,117 +721,17 @@ spec:
       properties:
         chart:
           source: oci://ghcr.io/my-org/charts/my-app
-          version: "2.1.0"
-          auth:
-            secretRef:
-              name: ghcr-creds
-              namespace: vela-system
-        release:
-          name: my-app
-          namespace: default
-```
-
-A `kubernetes.io/dockerconfigjson` Secret (e.g. created with `kubectl create secret docker-registry`) also works. KubeVela extracts the credentials from the `.dockerconfigjson` key automatically.
-
-**HTTPS Helm repository with basic auth**
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: chartmuseum-creds
-  namespace: vela-system
-type: kubernetes.io/basic-auth
-stringData:
-  username: helm-user
-  password: s3cr3t
----
-apiVersion: core.oam.dev/v1beta1
-kind: Application
-metadata:
-  name: private-https-chart
-spec:
-  components:
-    - name: my-app
-      type: helmchart
-      properties:
-        chart:
-          source: my-app
-          repoURL: https://charts.example.com
           version: "1.0.0"
           auth:
             secretRef:
-              name: chartmuseum-creds
+              name: registry-creds
               namespace: vela-system
         release:
           name: my-app
           namespace: default
 ```
 
-**HTTPS Helm repository with Bearer token**
-
-Some private repositories (Nexus, Artifactory, custom proxies) use Bearer token auth instead of Basic. Use an `Opaque` Secret with a `token` key:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: nexus-token
-  namespace: vela-system
-type: Opaque
-stringData:
-  token: "my-bearer-token"
----
-apiVersion: core.oam.dev/v1beta1
-kind: Application
-metadata:
-  name: bearer-token-chart
-spec:
-  components:
-    - name: my-app
-      type: helmchart
-      properties:
-        chart:
-          source: my-app
-          repoURL: https://nexus.example.com/repository/helm-hosted
-          version: "1.0.0"
-          auth:
-            secretRef:
-              name: nexus-token
-              namespace: vela-system
-        release:
-          name: my-app
-          namespace: default
-```
-
-**Direct .tgz URL with auth**
-
-The `source` field also accepts a direct `.tgz` URL. Auth works the same way:
-
-```yaml
-apiVersion: core.oam.dev/v1beta1
-kind: Application
-metadata:
-  name: tgz-url-chart
-spec:
-  components:
-    - name: my-app
-      type: helmchart
-      properties:
-        chart:
-          source: https://artifacts.example.com/charts/my-app-1.0.0.tgz
-          auth:
-            secretRef:
-              name: chartmuseum-creds
-              namespace: vela-system
-        release:
-          name: my-app
-          namespace: default
-```
-
-**Rotating credentials**
-
-When you rotate the Secret, the chart cache key changes automatically (it incorporates a hash of the Secret data). The next reconcile fetches a fresh copy of the chart with the new credentials. No Application spec bump is required.
+The same `auth` block works for HTTPS repos (`source` + `repoURL`) and direct `.tgz` URLs. When you rotate the Secret, the cache key updates automatically and the next reconcile pulls a fresh copy of the chart.
 
 ### Specification (helmchart)
 
@@ -838,7 +741,7 @@ When you rotate the Secret, the chart cache key changes automatically (it incorp
  chart | Chart source configuration | [chart](#chart-helmchart) | true |  
  release | Release configuration (optional - uses context defaults) | [release](#release-helmchart) | false |  
  values | Inline values merged with the highest priority; override everything in valuesFrom. | map[string]interface{} | false |  
- valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. Sources are read once per reconcile — editing a referenced ConfigMap/Secret does NOT trigger a new reconcile, so bump the Application spec to roll out new values. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
+ valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. Sources are read once per reconcile. Editing a referenced ConfigMap/Secret does NOT trigger a new reconcile, so bump the Application spec to roll out new values. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
  options | Rendering options | [options](#options-helmchart) | false |  
 
 
@@ -882,7 +785,7 @@ Supported Secret types:
  ---- | ----------- | ---- | -------- | ------- 
  kind | Source kind. Only `Secret` and `ConfigMap` are supported; `OCIRepository` is reserved for a future release. | "Secret" or "ConfigMap" | true |  
  name | Name of the Secret or ConfigMap. | string | true |  
- namespace | Namespace of the Secret or ConfigMap. Defaults to the release namespace. An explicit value must match either the release namespace or the Application's own namespace — other namespaces are rejected to prevent cross-tenant reads via the controller's cluster-wide RBAC. | string | false |  
+ namespace | Namespace of the Secret or ConfigMap. Defaults to the release namespace. An explicit value must match either the release namespace or the Application's own namespace; other namespaces are rejected to prevent cross-tenant reads via the controller's cluster-wide RBAC. | string | false |  
  key | Key inside `.data` whose value is parsed as YAML. | string | false | "values.yaml" 
  optional | If true, a missing Secret/ConfigMap or missing key is skipped silently. Parse errors and permission errors still fail the render. | bool | false | false 
 
