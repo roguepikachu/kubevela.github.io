@@ -606,11 +606,11 @@ spec:
 
 ## Helmchart
 
-> **Note:** There is a known limitation with pre-delete and post-delete hook functionality that will be addressed in later releases.
+> **Note:** `pre-delete` and `post-delete` Helm hooks do not execute. KubeVela's GC deletes resources directly via the Kubernetes API and never calls `helm uninstall`, so delete-phase hooks are bypassed entirely. Install and upgrade hooks (`pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`) work correctly.
 
 ### Description
 
-Deploy Helm charts natively in KubeVela
+Render and deploy Helm charts directly using the Helm Go SDK, without requiring the FluxCD addon. Charts can be sourced from HTTP(S) repositories, OCI registries, or direct `.tgz` URLs, and integrate with KubeVela's standard features including multi-cluster placement, workflow steps, and Application revision tracking.
 
 ### Examples (helmchart)
 
@@ -628,6 +628,8 @@ spec:
           source: oci://ghcr.io/org/charts/app
           version: "1.0.0"
 ```
+
+After the Application is reconciled you will see a ConfigMap named `{releaseName}-helm-release` in the release namespace. KubeVela creates this as its stable primary output to track release metadata. It is managed by the controller and should not be edited or deleted manually.
 
 Merge values from a ConfigMap and a Secret, with inline values taking precedence over both:
 
@@ -742,6 +744,7 @@ The same `auth` block works for HTTPS repos (`source` + `repoURL`) and direct `.
  release | Release configuration (optional - uses context defaults) | [release](#release-helmchart) | false |  
  values | Inline values merged with the highest priority; override everything in valuesFrom. | map[string]interface{} | false |  
  valuesFrom | Additional values sources merged in array order. Later entries override earlier ones on conflict, and inline `values` override everything in valuesFrom. Deep-merges map keys; arrays are replaced (not concatenated); null is preserved. Sources are read once per reconcile. Editing a referenced ConfigMap/Secret does NOT trigger a new reconcile, so bump the Application spec to roll out new values. | [[]valuesFrom](#valuesfrom-helmchart) | false |  
+ healthStatus | Criteria for declaring the component healthy. Each entry names a resource kind and a condition to check. When all entries pass, the workflow step is marked complete. If omitted, KubeVela uses its default readiness heuristic. | [[]healthStatus](#healthstatus-helmchart) | false |  
  options | Rendering options | [options](#options-helmchart) | false |  
 
 
@@ -783,7 +786,7 @@ Supported Secret types:
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
- kind | Source kind. Only `Secret` and `ConfigMap` are supported; `OCIRepository` is reserved for a future release. | "Secret" or "ConfigMap" | true |  
+ kind | Source kind. Only `Secret` and `ConfigMap` are supported. `OCIRepository` is not yet supported. | "Secret" or "ConfigMap" | true |  
  name | Name of the Secret or ConfigMap. | string | true |  
  namespace | Namespace of the Secret or ConfigMap. Defaults to the release namespace. An explicit value must match either the release namespace or the Application's own namespace; other namespaces are rejected to prevent cross-tenant reads via the controller's cluster-wide RBAC. | string | false |  
  key | Key inside `.data` whose value is parsed as YAML. | string | false | "values.yaml" 
@@ -798,10 +801,37 @@ Supported Secret types:
  namespace | Target namespace (defaults to Application namespace) | string | false |  
 
 
+#### healthStatus (helmchart)
+
+Each entry in the `healthStatus` array names one Kubernetes resource and the condition that must be `True` for that resource to be considered healthy. All entries must pass for the component to be marked healthy.
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ resource | Resource to check | [resource](#resource-helmchart) | true |  
+ condition | Condition to evaluate | [condition](#condition-helmchart) | true |  
+
+
+##### resource (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ kind | Kubernetes resource kind (e.g. `Deployment`, `StatefulSet`) | string | true |  
+ name | Resource name. If omitted, any resource of the matching kind satisfies the check. | string | false |  
+
+
+##### condition (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ type | Condition type to check. Accepts any Kubernetes condition string, e.g. `Ready`, `Available`, `Progressing`. | string | true |  
+ status | Expected condition status | "True" or "False" | false | "True" 
+
+
 #### options (helmchart)
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
+ includeCRDs | Include CRD resources from the chart | bool | false | true 
  skipTests | Skip test resources | bool | false | true 
  skipHooks | Skip hook resources | bool | false | false 
  createNamespace | Create namespace if it doesn't exist | bool | false | true 
@@ -812,6 +842,75 @@ Supported Secret types:
  force | Force resource updates | bool | false | false 
  recreatePods | Recreate pods on upgrade | bool | false | false 
  cleanupOnFail | Cleanup on failure | bool | false | false 
+ cache | Chart cache tuning | [cache](#cache-helmchart) | false |  
+
+
+#### cache (helmchart)
+
+The chart cache is in-memory and scoped to the vela-core controller pod. It resets on controller restart. By default each Application component gets its own cache namespace; set `key` to share a cache entry across components that use the same chart.
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ key | Cache key prefix. Defaults to `{appName}-{componentName}`. Set a shared value to reuse a cached chart across multiple components. | string | false |  
+ ttl | TTL for all versions, overriding the automatic immutable/mutable detection. Set to `"0"` to disable caching entirely. | string | false |  
+ immutableTTL | TTL for pinned (immutable) versions such as `1.2.3` or `v2.0.0`. | string | false | "24h" 
+ mutableTTL | TTL for floating versions such as `latest`, `dev`, or `-SNAPSHOT`. | string | false | "5m" 
+
+
+### Known limitations (helmchart)
+
+**Delete hooks do not fire**
+
+`pre-delete` and `post-delete` Helm hooks are never executed. KubeVela's GC deletes resources individually via the Kubernetes API without calling `helm uninstall`. Charts that rely on cleanup Jobs (database migrations, deregistration webhooks) will not run them on Application deletion. As a workaround, run those Jobs manually before deleting the Application.
+
+**CRDs from the `crds/` directory are not cleaned up on deletion**
+
+Helm never deletes CRDs it installed from a chart's `crds/` directory (by design, to prevent data loss). When you delete a helmchart Application, those CRDs are left behind. Affected charts include kube-prometheus-stack, ARC controller, and others that bundle CRDs in the `crds/` directory rather than in chart templates. CRDs installed via chart templates (Istio, cert-manager) are tracked normally and are cleaned up.
+
+**Chart cache is in-memory only**
+
+The chart cache lives in the vela-core controller pod's memory. A controller restart clears it, causing the next reconcile for each component to re-fetch its chart. This produces a short burst of chart downloads after a controller upgrade or pod eviction.
+
+**Editing a referenced ConfigMap or Secret does not trigger reconcile**
+
+When using `valuesFrom`, editing the referenced ConfigMap or Secret does not automatically re-render the chart. Touch any field under the Application's `.spec` (adding or changing an annotation works) to force a new reconcile.
+
+**Migrating from the FluxCD addon**
+
+The FluxCD `helm` component type uses a flat property structure. The native `helmchart` type restructures these under `chart`, `release`, and `values`:
+
+```yaml
+# Before (FluxCD addon)
+- name: database
+  type: helm
+  properties:
+    repoType: helm
+    url: https://charts.bitnami.com/bitnami
+    chart: postgresql
+    version: "12.1.0"
+    targetNamespace: default
+    releaseName: postgres
+    values:
+      auth:
+        database: myapp
+
+# After (native helmchart)
+- name: database
+  type: helmchart
+  properties:
+    chart:
+      source: postgresql
+      repoURL: https://charts.bitnami.com/bitnami
+      version: "12.1.0"
+    release:
+      name: postgres
+      namespace: default
+    values:
+      auth:
+        database: myapp
+```
+
+If an existing vanilla Helm release is already running in the cluster, the controller adopts it automatically on first reconcile with zero pod disruption.
 
 
 ## K8s-Objects
