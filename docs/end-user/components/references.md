@@ -606,7 +606,7 @@ spec:
 
 ## Helmchart
 
-> **Note:** There is a known limitation with pre-delete and post-delete hook functionality that will be addressed in later releases. Currently, only public chart repositories are supported — authentication for private repositories is on the roadmap.
+> **Note:** There is a known limitation with pre-delete and post-delete hook functionality that will be addressed in later releases.
 
 ### Description
 
@@ -686,7 +686,149 @@ spec:
           skipTests: true
 ```
 
-The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memory: 512Mi` (Secret overlay wins over the ConfigMap on the conflict), and `resources.limits.cpu: 100m` (preserved from the ConfigMap — the Secret didn't touch it).
+The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memory: 512Mi` (Secret overlay wins over the ConfigMap on the conflict), and `resources.limits.cpu: 100m` (preserved from the ConfigMap; the Secret didn't touch it).
+
+#### Authenticating with private chart registries
+
+KubeVela supports private Helm repositories and OCI registries through a `secretRef` on the `chart` block. The Secret is read by the vela-core controller, so it must live in the vela-core namespace (`vela-system` by default) unless the `namespace` field overrides it.
+
+**OCI private registry (Docker Hub, GHCR, ECR, etc.)**
+
+Create a `kubernetes.io/basic-auth` Secret with your registry username and password:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ghcr-creds
+  namespace: vela-system
+type: kubernetes.io/basic-auth
+stringData:
+  username: my-github-username
+  password: ghp_xxxxxxxxxxxxxxxxxxxx   # GitHub PAT with read:packages scope
+---
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: private-oci-chart
+spec:
+  components:
+    - name: my-app
+      type: helmchart
+      properties:
+        chart:
+          source: oci://ghcr.io/my-org/charts/my-app
+          version: "2.1.0"
+          auth:
+            secretRef:
+              name: ghcr-creds
+              namespace: vela-system
+        release:
+          name: my-app
+          namespace: default
+```
+
+A `kubernetes.io/dockerconfigjson` Secret (e.g. created with `kubectl create secret docker-registry`) also works. KubeVela extracts the credentials from the `.dockerconfigjson` key automatically.
+
+**HTTPS Helm repository with basic auth**
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chartmuseum-creds
+  namespace: vela-system
+type: kubernetes.io/basic-auth
+stringData:
+  username: helm-user
+  password: s3cr3t
+---
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: private-https-chart
+spec:
+  components:
+    - name: my-app
+      type: helmchart
+      properties:
+        chart:
+          source: my-app
+          repoURL: https://charts.example.com
+          version: "1.0.0"
+          auth:
+            secretRef:
+              name: chartmuseum-creds
+              namespace: vela-system
+        release:
+          name: my-app
+          namespace: default
+```
+
+**HTTPS Helm repository with Bearer token**
+
+Some private repositories (Nexus, Artifactory, custom proxies) use Bearer token auth instead of Basic. Use an `Opaque` Secret with a `token` key:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nexus-token
+  namespace: vela-system
+type: Opaque
+stringData:
+  token: "my-bearer-token"
+---
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: bearer-token-chart
+spec:
+  components:
+    - name: my-app
+      type: helmchart
+      properties:
+        chart:
+          source: my-app
+          repoURL: https://nexus.example.com/repository/helm-hosted
+          version: "1.0.0"
+          auth:
+            secretRef:
+              name: nexus-token
+              namespace: vela-system
+        release:
+          name: my-app
+          namespace: default
+```
+
+**Direct .tgz URL with auth**
+
+The `source` field also accepts a direct `.tgz` URL. Auth works the same way:
+
+```yaml
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: tgz-url-chart
+spec:
+  components:
+    - name: my-app
+      type: helmchart
+      properties:
+        chart:
+          source: https://artifacts.example.com/charts/my-app-1.0.0.tgz
+          auth:
+            secretRef:
+              name: chartmuseum-creds
+              namespace: vela-system
+        release:
+          name: my-app
+          namespace: default
+```
+
+**Rotating credentials**
+
+When you rotate the Secret, the chart cache key changes automatically (it incorporates a hash of the Secret data). The next reconcile fetches a fresh copy of the chart with the new credentials. No Application spec bump is required.
 
 ### Specification (helmchart)
 
@@ -707,6 +849,31 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
  source | Chart location - automatically detected based on format (OCI, Direct URL, Repo chart) | string | true |  
  repoURL | Repository URL for repository-based charts | string | false |  
  version | Version/tag for repository and OCI charts (ignored for direct URLs) | string | false | "latest" 
+ auth | Credentials for private chart sources | [auth](#auth-helmchart) | false |  
+
+
+#### auth (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ secretRef | Reference to the Secret holding credentials | [secretRef](#secretref-helmchart) | true |  
+
+
+#### secretRef (helmchart)
+
+ Name | Description | Type | Required | Default 
+ ---- | ----------- | ---- | -------- | ------- 
+ name | Name of the Secret | string | true |  
+ namespace | Namespace of the Secret. Defaults to the Application namespace. The vela-core controller must have RBAC access to read Secrets in this namespace. | string | false |  
+
+Supported Secret types:
+
+| Secret type | Credentials read | Use case |
+|---|---|---|
+| `kubernetes.io/basic-auth` | `username` + `password` keys | HTTPS Helm repo, OCI registry username/password |
+| `kubernetes.io/dockerconfigjson` | `.dockerconfigjson` key (standard Docker config) | OCI registry with Docker-format credentials |
+| `Opaque` with `username`/`password` | `username` + `password` keys | HTTPS Helm repo, OCI registry |
+| `Opaque` with `token` | `token` key | Bearer token auth (Nexus, Artifactory, custom proxies) |
 
 
 #### valuesFrom (helmchart)
@@ -738,7 +905,7 @@ The rendered chart sees `replicaCount: 5` (from inline), `resources.limits.memor
  timeout | Rendering timeout | string | false | "5m" 
  maxHistory | Revisions to keep | int | false | 10 
  atomic | Rollback on failure | bool | false | false 
- wait | Wait for resources | bool | false | false 
+ wait | Wait for resources to become ready before marking the workflow step complete | bool | false | true 
  force | Force resource updates | bool | false | false 
  recreatePods | Recreate pods on upgrade | bool | false | false 
  cleanupOnFail | Cleanup on failure | bool | false | false 
