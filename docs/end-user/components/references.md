@@ -843,12 +843,12 @@ Only use resource kinds that expose `.status.conditions` (Deployment, StatefulSe
  skipHooks | Skip hook resources | bool | false | false 
  createNamespace | Create namespace if it doesn't exist | bool | false | true 
  timeout | Rendering and wait timeout (Helm SDK uses one value for both) | string | false | "5m" 
- maxHistory | Revisions to keep. Takes effect on upgrade; ignored on first install. | int | false | 10 
+ maxHistory | Revisions to keep (upgrade-only; ignored on first install). | int | false | 10 
  atomic | Rollback on failure | bool | false | false 
  wait | Wait for resources to become ready before marking the workflow step complete | bool | false | false 
  force | Force resource updates | bool | false | false 
- recreatePods | Recreate pods on upgrade. Ignored on first install. | bool | false | false 
- cleanupOnFail | Cleanup on failure. Takes effect on upgrade; ignored on first install. | bool | false | false 
+ recreatePods | Recreate pods (upgrade-only; ignored on first install). | bool | false | false 
+ cleanupOnFail | Cleanup on failure (upgrade-only; ignored on first install). | bool | false | false 
  cache | Chart cache tuning | [cache](#cache-helmchart) | false |  
 
 
