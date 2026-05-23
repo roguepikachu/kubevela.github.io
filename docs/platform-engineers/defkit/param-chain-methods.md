@@ -2,682 +2,501 @@
 title: Parameter Chain Methods
 ---
 
-All parameter constructors return `*Param` — chain these methods to configure validation, defaults, and metadata. Methods are composable in any order.
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
-### Common Methods (all param types)
+Every parameter constructor — `String`, `Int`, `Bool`, `Float`, `Enum`, `Array`, `Map`, `Object`, `StringKeyMap` — returns a typed pointer that can be chained with constraint, metadata, and expression methods before being passed to `.Params()`. This document covers the full chain-method surface: common metadata and presence modifiers shared by all parameter types; type-specific schema constraints (string pattern and length, numeric range, array item counts, map closed-struct); string and arithmetic expression methods that produce `Value` results for use in `.Set()`; and runtime condition methods that produce `Condition` results for use in `.SetIf()`, `.If()`, and `placement` predicates.
 
-Inherited from `baseParam` — available on every parameter type:
+## Common chain methods
 
-| Method | Description |
-|---|---|
-| `.Required()` | Marks the parameter as required. Users must explicitly provide a value. Generates CUE `name!: type`. |
-| `.Optional()` | Marks the parameter as explicitly optional. The field can be omitted. Generates CUE `name?: type`. |
-| `.Default(value)` | Sets a default value. Generates CUE `*value \| type`. Does not set the optional flag — parameters with defaults are implicitly optional at the CUE level. |
-| `.Description(desc)` | Sets the human-readable description shown in `vela show`. Generates `// +usage=desc`. |
-| `.Short(s)` | Sets a short alias (e.g. `"i"` for `"image"`). Generates `// +short=s`. |
-| `.Ignore()` | Marks the parameter as ignored — appears in CUE schema but not in `vela show`. Generates `// +ignore`. |
-| `.IsSet() Condition` | Returns a condition that is true when the user provided this parameter. Generates CUE `parameter["name"] != _\|_`. |
-| `.NotSet() Condition` | Returns a condition that is true when the parameter was omitted. Generates CUE `parameter["name"] == _\|_`. |
-| `.Eq(val) Condition` | Returns a condition comparing this parameter's value to a literal. Generates CUE `parameter.name == val`. |
-| `.Ne(val)`, `.Gt(val)`, `.Gte(val)`, `.Lt(val)`, `.Lte(val)` | Additional comparison conditions generating `!=`, `>`, `>=`, `<`, `<=` respectively. |
+These methods are available on every parameter type via `baseParam`. They control the generated CUE field presence marker, default value, and documentation annotations.
 
-## `.Optional()` / `.Required()`
-
-Controls the CUE field presence marker. defkit uses a three-state model:
-
-- **Bare param (no call)** — emits `field?: type`. Optional by default; the field may be absent.
-- **`.Optional()`** — emits `field?: type`. Identical to bare param — use for readability.
-- **`.Mandatory()`** — emits `field: type`. Non-optional; must have a value (defaults or merging can satisfy it).
-- **`.Required()`** — emits `field!: type`. The user must explicitly provide the value; it cannot be satisfied by defaults or merging.
-
-```go title="Go — defkit"
-defkit.String("image")                   // optional by default — has ?
-defkit.String("image").Mandatory()       // non-optional — no ?, no !
-defkit.String("token").Required()        // user must explicitly set this
-defkit.String("tag").Optional()          // same as bare param — has ?
-defkit.String("tag").Default("latest")   // non-optional with default value
-```
-
-```cue title="CUE — generated"
-image?:  string             // optional by default — has ?
-image:   string             // .Mandatory() — non-optional, no ?, no !
-token!:  string             // required — must be explicitly set
-tag?:    string             // optional  — has ?
-tag:     *"latest" | string // non-optional with default
-```
-
-## `.Default(value)`
-
-Sets a default value. The CUE default marker (`*`) is placed before the value in the disjunction. Works with strings, ints, bools, and string slices.
-
-```go title="Go — defkit"
-defkit.String("tag").Default("latest")
-defkit.Int("replicas").Default(1)
-defkit.Bool("readOnly").Default(false)
-```
-
-```cue title="CUE — generated"
-tag:      *"latest" | string
-replicas: *1        | int
-readOnly: *false    | bool
-```
-
-## `.Description()` / `.Short()`
-
-`.Description()` adds a human-readable description shown in `vela show` and generated OpenAPI schemas. `.Short()` assigns a single-letter CLI shorthand flag (e.g., `-i` for image).
-
-```go title="Go — defkit"
-defkit.String("image").
-    Short('i').
-    Description("Container image reference (e.g. nginx:1.25)")
-```
-
-```cue title="CUE — generated annotation"
-// +usage=Container image reference (e.g. nginx:1.25)
-// +short=i
-image?: string
-```
-
-## `.Values()`
-
-Restricts an `Enum` parameter to the listed allowed values. Produces a CUE string disjunction. Combine with `.Default()` to set a pre-selected value.
-
-```go title="Go — defkit"
-defkit.Enum("policy").
-    Values("Retain", "Delete", "Recycle").
-    Default("Retain")
-```
-
-```cue title="CUE — generated"
-policy: *"Retain" | "Delete" | "Recycle"
-```
-
-## `.Min()` / `.Max()`
-
-Applies inclusive range constraints to `Int` and `Float` parameters. Generates CUE constraint expressions using `>=` and `<=` intersected with the base type.
-
-```go title="Go — defkit"
-defkit.Int("replicas").Default(1).Min(1).Max(100)
-defkit.Int("timeout").Default(30).Min(5)
-```
-
-```cue title="CUE — generated"
-replicas: *1  | int & >=1 & <=100
-timeout:  *30 | int & >=5
-```
-
-## `.Ignore()`
-
-Marks the parameter as internal — excluded from the generated CUE schema and will not appear in `vela show` or OpenAPI output. Use for deprecated fields or helper variables that exist only in Go for template composition.
-
-```go title="Go — defkit"
-// Deprecated field — excluded from CUE schema
-port := defkit.Int("port").
-    Ignore().
-    Description("Deprecated field, please use ports instead")
-
-return defkit.NewComponent("webservice").
-    Params(image, port, ports).  // port excluded from schema
-    Template(webserviceTemplate)
-```
-
-```cue title="CUE — generated"
-// Only non-ignored params appear:
-parameter: {
-    image?: string
-    ports?: [...]
-    // port is omitted from schema
-}
-```
-
-## String Constraints: `.Pattern()` / `.MinLen()` / `.MaxLen()`
-
-`.Pattern()` restricts values to those matching a regular expression. `.MinLen()` and `.MaxLen()` enforce length bounds. All generate CUE constraint intersections.
-
-```go title="Go — defkit"
-name := defkit.String("name").Pattern("^[a-z]+$")
-slug := defkit.String("slug").MinLen(1).MaxLen(63)
-defkit.String("name").NotEmpty()                    // string & !=""
-```
-
-```cue title="CUE — generated"
-name?: string & =~"^[a-z]+$"
-slug?: string & strings.MinRunes(1) & strings.MaxRunes(63)
-```
-
-| Generated CUE | Go Definition |
-|:-------------|:-------------|
-| `name: string & =~"^[a-z]+$"` | `String("name").Pattern("^[a-z]+$")` |
-| `name: string & !=""` | `String("name").NotEmpty()` |
+| Method | CUE generated | Description |
+|---|---|---|
+| `.Required() *T` | `name!: type` | User must explicitly provide this field. Cannot be satisfied by defaults or merging. |
+| `.Optional() *T` | `name?: type` | Field may be absent from input entirely. Identical to bare param for readability. |
+| `.Default(value) *T` | `name: *value \| type` | Sets a default. The parameter becomes non-optional at the CUE level (no `?` or `!`) unless combined with `.Optional()` / `.Required()`. |
+| `.Description(desc string) *T` | `// +usage=desc` | Human-readable description shown in `vela show` and generated OpenAPI. |
+| `.Short(s string) *T` | `// +short=s` | Single-letter CLI shorthand flag (e.g. `"i"` → `-i`). Available on `String`, `Int`, `Bool`, `Float`, `Enum`. |
+| `.Ignore() *T` | `// +ignore` | Excludes the field from `vela show` and OpenAPI output. Available on `String`, `Int`, `Bool`, `Float`, `Enum`. |
 
 :::tip
-For negative regex constraints (CUE `!~`), use a [Validator](#validators) with `LocalField().Matches()` instead of an inline type constraint. For example, to reject strings ending with a hyphen: `Validate("must not end with -").FailWhen(LocalField("region").Matches(".*-$"))`.
+A bare param with no modifier emits `name?: type` — the same as `.Optional()`. Use `.Optional()` explicitly to signal intent in code that will be read by others.
 :::
 
-## Array Constraints
+## String constraints
 
-```go
-defkit.Array("ports").MinItems(1).MaxItems(10)
-defkit.StringList("origins").NotEmpty()                                        // [...(string & !="")]
-defkit.Array("methods").OfEnum("GET", "POST", "PUT", "DELETE")                 // [...("GET" | "POST" | ...)]
-```
+Available on `*StringParam` (i.e. `defkit.String(...)`). These constraints appear inside the `parameter:` block and are enforced by CUE at apply time.
 
-| Generated CUE | Go Definition |
-|:-------------|:-------------|
-| `origins?: [...(string & !="")]` | `StringList("origins").NotEmpty()` |
-| `methods?: [...("GET" \| "POST")]` | `Array("methods").OfEnum("GET", "POST")` |
-
-- **`NotEmpty()`** -- constrains each *element* to be non-empty (`!=""`). Same as `StringParam.NotEmpty()` but applied at the element level.
-- **`OfEnum(values...)`** -- constrains each element to one of the given values.
-
-:::tip
-To validate that an array itself has at least one item, use a [Validator](#validators) on the parent struct or array:
-```go
-defkit.Array("corsRules").WithFields(
-    defkit.Array("allowedMethods").OfEnum("GET", "POST"),
-).Validators(
-    defkit.Validate("at least one method required").
-        FailWhen(defkit.LocalField("allowedMethods").IsEmpty()),
-)
-```
-This keeps the framework generic — any validation logic can be expressed through `Validators()` without needing a dedicated method for each pattern.
-:::
-
-### Map Constraints
-
-```go
-defkit.Object("governance").Closed()  // close({...}) -- rejects extra fields
-```
-
-## Validators
-
-Validators express cross-field validation rules using the CUE `_validate*` block pattern. They emit:
-
-```cue
-_validateName: {
-    "error message": true
-    if <failCondition> {
-        "error message": false
-    }
-}
-```
-
-Validators can be attached at three levels:
-- **Component-level** -- `defkit.NewComponent(...).Validators(...)`
-- **Inside structs** -- `defkit.Object(...).Validators(...)`
-- **Inside array elements** -- `defkit.Array(...).Validators(...)`
-
-### Validate / FailWhen / WithName
-
-The core validator builder chain:
-
-```go title="basic_validator.go"
-defkit.Validate("tenantName must not end with a hyphen").  // error message
-    WithName("_validateTenantName").                        // CUE variable name
-    FailWhen(defkit.LocalField("tenantName").Matches(".*-$"))  // condition that triggers failure
-```
-
-<details>
-<summary>Generated CUE</summary>
-
-```cue
-_validateTenantName: {
-    "tenantName must not end with a hyphen": true
-    if tenantName =~ ".*-$" {
-        "tenantName must not end with a hyphen": false
-    }
-}
-```
-
-</details>
-
-### OnlyWhen -- Guarded Validator
-
-A guarded validator is only active when a condition is true. The entire block is wrapped in an `if` guard:
-
-```go title="guarded_validator.go"
-defkit.Validate("versioningEnabled must be true when replication is set").
-    WithName("_validateVersioning").
-    OnlyWhen(defkit.Or(
-        defkit.LocalField("replicationConfiguration").IsSet(),
-        defkit.LocalField("objectLock").IsSet(),
-    )).
-    FailWhen(defkit.LocalField("versioningEnabled").Eq(false))
-```
-
-<details>
-<summary>Generated CUE</summary>
-
-```cue
-if replicationConfiguration != _|_ || objectLock != _|_ {
-    _validateVersioning: {
-        "versioningEnabled must be true when replication is set": true
-        if versioningEnabled == false {
-            "versioningEnabled must be true when replication is set": false
-        }
-    }
-}
-```
-
-</details>
-
-### MapParam.Validators -- Validators Inside Structs
-
-Attach validators to an `Object` parameter. They are emitted inside the struct:
-
-```go title="governance_validators.go"
-governance := defkit.Object("governance").Closed().
-    WithFields(
-        defkit.String("tenantName").NotEmpty(),
-        defkit.String("departmentCode").NotEmpty(),
-    ).
-    Validators(
-        defkit.Validate("tenantName must not end with a hyphen").
-            WithName("_validateTenantName").
-            FailWhen(defkit.LocalField("tenantName").Matches(".*-$")),
-        defkit.Validate("departmentCode must be numeric").
-            WithName("_validateDeptCode").
-            FailWhen(defkit.Not(defkit.LocalField("departmentCode").Matches("^[0-9]+$"))),
-    )
-```
-
-<details>
-<summary>Generated CUE</summary>
-
-```cue
-governance: close({
-    tenantName: string & !=""
-    departmentCode: string & !=""
-    _validateTenantName: {
-        "tenantName must not end with a hyphen": true
-        if tenantName =~ ".*-$" {
-            "tenantName must not end with a hyphen": false
-        }
-    }
-    _validateDeptCode: {
-        "departmentCode must be numeric": true
-        if !(departmentCode =~ "^[0-9]+$") {
-            "departmentCode must be numeric": false
-        }
-    }
-})
-```
-
-</details>
-
-### ArrayParam.Validators -- Validators Inside Array Elements
-
-Validators on arrays are emitted inside each element struct:
-
-```go title="lifecycle_validators.go"
-defkit.Array("lifecycleRules").Optional().
-    WithFields(
-        defkit.String("id").Optional().NotEmpty(),
-        defkit.Array("expiration").Optional().WithFields(...),
-        defkit.Array("transition").Optional().WithFields(...),
-    ).
-    Validators(
-        defkit.Validate("id is required").
-            WithName("_validateId").
-            FailWhen(defkit.LocalField("id").NotSet()),
-        defkit.Validate("at least one sub-rule is required").
-            WithName("_validateLifecycleRules").
-            FailWhen(defkit.And(
-                defkit.LocalField("expiration").NotSet(),
-                defkit.LocalField("transition").NotSet(),
-            )),
-    )
-```
-
-<details>
-<summary>Generated CUE</summary>
-
-```cue
-lifecycleRules?: [...{
-    id?: string & !=""
-    expiration?: [...]
-    transition?: [...]
-    _validateId: {
-        "id is required": true
-        if id == _|_ {
-            "id is required": false
-        }
-    }
-    _validateLifecycleRules: {
-        "at least one sub-rule is required": true
-        if expiration == _|_ && transition == _|_ {
-            "at least one sub-rule is required": false
-        }
-    }
-}]
-```
-
-</details>
-
-### Component-Level Validators
-
-Validators attached to the component are emitted at the top level of the `parameter:` block:
-
-```go title="component_validators.go"
-name := defkit.String("name").NotEmpty()
-
-defkit.NewComponent("my-component").
-    Params(name).
-    Validators(
-        defkit.Validate("name is too long").
-            WithName("_validateNameLength").
-            FailWhen(defkit.LenOf(defkit.Plus(
-                defkit.Lit("prefix-"), name,
-            )).Gt(63)),
-    )
-```
-
-### Mutual Exclusion Pattern
-
-A common pattern: two fields where exactly one must be set:
-
-```go title="mutual_exclusion.go"
-defkit.Array("Statement").WithFields(
-    defkit.Object("Principal").Optional(),
-    defkit.Object("NotPrincipal").Optional(),
-).Validators(
-    defkit.Validate("Either Principal or NotPrincipal is required").
-        WithName("_validatePrincipalRequired").
-        FailWhen(defkit.And(
-            defkit.LocalField("Principal").NotSet(),
-            defkit.LocalField("NotPrincipal").NotSet(),
-        )),
-    defkit.Validate("Principal and NotPrincipal cannot both be set").
-        WithName("_validatePrincipalExclusive").
-        FailWhen(defkit.And(
-            defkit.LocalField("Principal").IsSet(),
-            defkit.LocalField("NotPrincipal").IsSet(),
-        )),
-)
-```
-
-### Nested Field and Array Index Access
-
-`LocalField` supports dot-path and array index syntax for cross-field checks across nested structures:
-
-```go title="nested_field_access.go"
-// Check a nested field inside a struct
-defkit.Validate("Principal must have at least one AWS entry").
-    WithName("_validatePrincipalAWS").
-    OnlyWhen(defkit.And(
-        defkit.LocalField("Principal").IsSet(),
-        defkit.LocalField("Principal.AWS").IsSet(),
-    )).
-    FailWhen(defkit.LocalField("Principal.AWS").IsEmpty())
-
-// Check a field inside the first element of an array
-defkit.Validate("transition days must be less than expiration days").
-    WithName("_validateTransitionDays").
-    OnlyWhen(defkit.LocalField("days").IsSet()).
-    FailWhen(defkit.And(
-        defkit.LocalField("expiration").IsSet(),
-        defkit.LocalField("expiration").LenGt(0),
-        defkit.LocalField("expiration[0].days").IsSet(),
-        defkit.LocalField("days").Gte(defkit.LocalField("expiration[0].days")),
-    ))
-```
-
-### Date Comparison with TimeParse
-
-For CUE `time.Parse()` comparisons between date fields:
-
-```go title="date_comparison.go"
-defkit.Validate("expiration date must be later than transition date").
-    WithName("_validateDateOrder").
-    OnlyWhen(defkit.LocalField("date").IsSet()).
-    FailWhen(defkit.And(
-        defkit.LocalField("expiration").IsSet(),
-        defkit.LocalField("expiration").LenGt(0),
-        defkit.LocalField("expiration[0].date").IsSet(),
-        defkit.TimeParse("2006-01-02T15:04:05Z", defkit.LocalField("date")).Gte(
-            defkit.TimeParse("2006-01-02T15:04:05Z", defkit.LocalField("expiration[0].date"))),
-    ))
-```
-
-<details>
-<summary>Generated CUE</summary>
-
-```cue
-if date != _|_ {
-    _validateDateOrder: {
-        "expiration date must be later than transition date": true
-        if expiration != _|_ && len(expiration) > 0 && expiration[0].date != _|_ && time.Parse("2006-01-02T15:04:05Z", date) >= time.Parse("2006-01-02T15:04:05Z", expiration[0].date) {
-            "expiration date must be later than transition date": false
-        }
-    }
-}
-```
-
-</details>
-
-### String Length Validation with LenOf
-
-Validate the length of concatenated strings:
-
-```go title="length_validation.go"
-name := defkit.String("name").NotEmpty()
-
-defkit.Validate("combined name must be under 64 characters").
-    WithName("_validateNameLength").
-    OnlyWhen(existingResources.Eq(false)).
-    FailWhen(defkit.LenOf(defkit.Plus(
-        defkit.Lit("tenant-"),
-        defkit.Reference("parameter.governance.tenantName"),
-        defkit.Lit("-"),
-        name,
-    )).Gt(63))
-```
-
-<details>
-<summary>Generated CUE</summary>
-
-```cue
-if parameter.existingResources == false {
-    _validateNameLength: {
-        "combined name must be under 64 characters": true
-        if len("tenant-" + parameter.governance.tenantName + "-" + parameter.name) > 63 {
-            "combined name must be under 64 characters": false
-        }
-    }
-}
-```
-
-</details>
-
-### LocalField Reference Summary
-
-| Method | Generated CUE | Description |
-|:-------|:-------------|:-----------|
-| `LocalField("x").IsSet()` | `x != _\|_` | Field exists |
-| `LocalField("x").NotSet()` | `x == _\|_` | Field absent |
-| `LocalField("x").Eq("v")` | `x == "v"` | Equality |
-| `LocalField("x").Ne("v")` | `x != "v"` | Inequality |
-| `LocalField("x").Matches("pat")` | `x =~ "pat"` | Regex match |
-| `LocalField("x").IsEmpty()` | `len(x) == 0` | Empty collection |
-| `LocalField("x").LenEq(n)` | `len(x) == n` | Length equals |
-| `LocalField("x").LenGt(n)` | `len(x) > n` | Length greater than |
-| `LocalField("a").Gte(LocalField("b"))` | `a >= b` | Field-to-field comparison |
-| `LocalField("a.b").IsSet()` | `a.b != _\|_` | Nested dot-path |
-| `LocalField("a[0].b").IsSet()` | `a[0].b != _\|_` | Array index path |
+| Method | CUE generated | Description |
+|---|---|---|
+| `.Values(values ...string) *StringParam` | `"v1" \| "v2" \| ...` | Restricts the string to a fixed set of allowed values, producing a CUE string disjunction. |
+| `.OpenEnum() *StringParam` | `"v1" \| "v2" \| string` | Like `.Values()` but keeps the enum open — any string is also accepted. Useful for well-known values plus user-defined ones. |
+| `.Pattern(regex string) *StringParam` | `string & =~"regex"` | Requires the value to match a regular expression. |
+| `.MinLen(n int) *StringParam` | `strings.MinRunes(n)` | Minimum UTF-8 rune count. Requires the `"strings"` CUE import (add `.WithImports("strings")` to the definition). |
+| `.MaxLen(n int) *StringParam` | `strings.MaxRunes(n)` | Maximum UTF-8 rune count. Same import requirement. |
 
 :::caution
-`LocalField` is for use inside validators attached to `MapParam.Validators()` or `ArrayParam.Validators()`. For template-level conditions (in `SetIf`, `If/EndIf`), use normal parameter references like `defkit.Bool("enabled").IsSet()`.
+For negative regex constraints (CUE `!~`), use a raw `.WithSchema()` string or a `defkit.CUEExpr` — these are not expressible through the typed chain-method API alone.
 :::
 
-## Conditional Parameters
+## Numeric constraints
 
-Parameters can change shape -- different fields, different defaults, different optionality -- based on a discriminator value. Use `ConditionalParams` for top-level blocks and `MapParam.ConditionalFields()` for fields inside a struct.
+Available on `*IntParam` and `*FloatParam`.
 
-### Top-Level Conditional Blocks
+| Method | CUE generated | Description |
+|---|---|---|
+| `.Min(n) *T` | `int & >=n` or `float & >=n` | Inclusive lower bound. |
+| `.Max(n) *T` | `int & <=n` or `float & <=n` | Inclusive upper bound. |
 
-```go title="conditional_params.go"
-existingResources := defkit.Bool("existingResources").Default(false)
+When combined with `.Default(v)` the disjunction reads `*v | int & >=n & <=n`.
 
-comp := defkit.NewComponent("my-component").
-    Params(existingResources, name).
-    ConditionalParams(defkit.ConditionalParams(
-        defkit.WhenParam(existingResources.Eq(false)).Params(
-            defkit.Bool("forceDestroy").Default(false),
-            defkit.Enum("encryption").Default("AES256").Values("AES256", "aws:kms"),
-        ).Validators(
-            defkit.Validate("invalid encryption config").
-                FailWhen(someCondition),
-        ),
-        defkit.WhenParam(existingResources.Eq(true)).Params(
-            defkit.Bool("forceDestroy").Optional(),
-            defkit.Enum("encryption").Optional().Values("AES256", "aws:kms"),
-        ),
-    ))
+## Array constraints
+
+Available on `*ArrayParam`.
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.MinItems(n int) *ArrayParam` | `list.MinItems(n) & [...]` | Minimum number of array elements. Requires the `"list"` CUE import (add `.WithImports("list")` to the definition). |
+| `.MaxItems(n int) *ArrayParam` | `list.MaxItems(n) & [...]` | Maximum number of array elements. Same import requirement. |
+| `.OfEnum(values ...string) *ArrayParam` | `[...("v1" \| "v2" \| ...)]` | Constrains each element to one of the given string values. |
+
+## Map constraints
+
+Available on `*MapParam` (and its alias `defkit.Object(...)`).
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.Closed() *MapParam` | `close({...})` | Wraps the generated struct in CUE's `close()`, rejecting any extra fields not explicitly declared via `.WithFields()`. |
+
+## String expressions
+
+Available on `*StringParam`. These methods return a `Value` for use in `.Set()` / `.SetIf()` value positions — they do **not** affect the `parameter:` schema block.
+
+| Method | CUE generated | Returns |
+|---|---|---|
+| `.Concat(suffix string) Value` | `parameter.name + "suffix"` | Value |
+| `.Prepend(prefix string) Value` | `"prefix" + parameter.name` | Value |
+
+:::tip
+Neither `Concat` nor `Prepend` chains further — both return `Value`, not `*StringParam`. To concatenate two parameters together, use `defkit.Plus(...)` from the value-expression API.
+:::
+
+## Arithmetic expressions
+
+Available on `*IntParam`. These return a `Value`.
+
+| Method | CUE generated | Returns |
+|---|---|---|
+| `.Add(n int) Value` | `parameter.name + n` | Value |
+| `.Sub(n int) Value` | `parameter.name - n` | Value |
+| `.Mul(n int) Value` | `parameter.name * n` | Value |
+| `.Div(n int) Value` | `parameter.name / n` | Value |
+
+Arithmetic results are integer expressions. Do not assign them to Kubernetes fields that require a string (e.g. `env[].value`).
+
+## Runtime conditions — presence
+
+These methods produce `Condition` values for use in `.SetIf()`, `.If()`/`.EndIf()`, `.OutputsIf()`, and placement predicates. They are available on all parameter types via `baseParam`.
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.IsSet() Condition` | `parameter["name"] != _|_` | True when the user supplied this parameter. The primary guard for optional params. |
+| `.NotSet() Condition` | `parameter["name"] == _|_` | True when the parameter was omitted. |
+| `.Eq(val any) Condition` | `parameter.name == val` | Equality comparison against a literal. |
+| `.Ne(val any) Condition` | `parameter.name != val` | Inequality comparison. |
+| `.Gt(val any) Condition` | `parameter.name > val` | Greater-than comparison. Meaningful for numeric params. |
+| `.Gte(val any) Condition` | `parameter.name >= val` | Greater-than-or-equal. |
+| `.Lt(val any) Condition` | `parameter.name < val` | Less-than comparison. |
+| `.Lte(val any) Condition` | `parameter.name <= val` | Less-than-or-equal. |
+
+## Runtime conditions — boolean, string, and collection predicates
+
+### `BoolParam` conditions
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.IsTrue() Condition` | `if parameter.name` | Truthy guard — shorter and more idiomatic than `.Eq(true)`. |
+| `.IsFalse() Condition` | `if !parameter.name` | Falsy guard — shorter than `.Eq(false)`. |
+
+### `StringParam` conditions
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.In(values ...string) Condition` | `parameter.name == "v1" \|\| ...` | True when the value is one of the listed strings. |
+| `.Matches(pattern string) Condition` | `parameter.name =~ "pattern"` | True when the value matches a regex. |
+| `.Contains(substr string) Condition` | `strings.Contains(parameter.name, "sub")` | True when the string contains a substring. Requires `"strings"` import. |
+| `.StartsWith(prefix string) Condition` | `strings.HasPrefix(parameter.name, "pfx")` | True when the string starts with a prefix. Requires `"strings"` import. |
+| `.EndsWith(suffix string) Condition` | `strings.HasSuffix(parameter.name, "sfx")` | True when the string ends with a suffix. Requires `"strings"` import. |
+
+### `IntParam` and `FloatParam` conditions
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.In(values ...T) Condition` | `parameter.name == v1 \|\| ...` | True when the value is one of the listed integers or floats. |
+
+### `ArrayParam` runtime conditions
+
+These conditions are distinct from `.MinItems()`/`.MaxItems()` (schema constraints). They control template logic only.
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.IsSet() Condition` | `parameter["x"] != _|_` | True when the array was supplied. |
+| `.IsNotEmpty() Condition` | `len(parameter.x) > 0` | True when present and non-empty. |
+| `.IsEmpty() Condition` | two `if` blocks: absent OR empty | True when absent or empty. Renders as two separate blocks because CUE cannot express `||` across a potentially-absent value. |
+| `.LenEq(n int) Condition` | `len(parameter.x) == n` | Exact length. `LenEq(0)` is equivalent to `IsEmpty()`. |
+| `.LenGt(n int) Condition` | `len(parameter.x) > n` | Length strictly greater than `n`. |
+| `.LenGte(n int) Condition` | `len(parameter.x) >= n` | Length greater than or equal to `n`. |
+| `.LenLt(n int) Condition` | `len(parameter.x) < n` | Length strictly less than `n`. |
+| `.LenLte(n int) Condition` | `len(parameter.x) <= n` | Length less than or equal to `n`. |
+| `.Contains(val any) Condition` | `list.Contains(parameter.x, val)` | True when the array contains the given value. Requires `"list"` import. |
+
+### `MapParam` / `StringKeyMap` runtime conditions
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `.IsSet() Condition` | `parameter["x"] != _|_` | True when the map was supplied. |
+| `.IsNotEmpty() Condition` | `len(parameter.x) > 0` | True when present and non-empty. |
+| `.IsEmpty() Condition` | two `if` blocks: absent OR empty | Same two-block rendering as `ArrayParam.IsEmpty()`. |
+| `.HasKey(key string) Condition` | `parameter.x.key != _|_` | True when the map contains the named key. Available on `*MapParam` and `*StringKeyMapParam`. |
+| `.LenEq(n int) Condition` | `len(parameter.x) == n` | Exact entry count. `LenEq(0)` equivalent to `IsEmpty()`. |
+| `.LenGt(n int) Condition` | `len(parameter.x) > n` | Entry count greater than `n`. |
+
+## Struct field access
+
+`defkit.Struct(name)` and `defkit.Object(name)` / `defkit.Map(name)` expose a `.Field(fieldPath string)` method that returns a `*ParamFieldRef`. This can be used as a `Value` in `.Set()` positions or tested with `.IsSet()` and `.Eq()` in condition positions.
+
+| Method | CUE generated | Description |
+|---|---|---|
+| `structParam.Field("x") *ParamFieldRef` | `parameter.struct.x` | Reference to a nested field. |
+| `mapParam.Field("x") *ParamFieldRef` | `parameter.map.x` | Same as above for `Map`/`Object`. |
+| `ref.IsSet() Condition` | `parameter.struct.x != _|_` | Presence check on the nested field. |
+| `ref.Eq(val any) Condition` | `parameter.struct.x == val` | Equality check on the nested field. |
+| `ref.Ne(val any) Condition` | `parameter.struct.x != val` | Inequality check. |
+
+## Example
+
+The `chain-methods-demo` component exercises every table in this document. From **Common chain methods**: `image.Required().Short("i").Description(...)` and `readOnly.Default(false)`. From **String constraints**: `appName.Optional().Pattern(...).MinLen(1).MaxLen(48)` and `env.Values("dev","staging","prod").Default("dev")`. From **Numeric constraints**: `replicas.Default(1).Min(1).Max(20)`. From **Array constraints**: `ports.MinItems(1).MaxItems(10)`. From **String expressions**: `appName.Concat("-svc")` and `appName.Prepend("platform-")`. From **Arithmetic expressions**: `replicas.Add(10)` lands in `spec.minReadySeconds`. From **Runtime conditions**: `labels.IsSet()`, `readOnly.IsTrue()`, `readOnly.IsFalse()`, `ports.IsSet()`, `appName.IsSet()`, `env.In(...)`, `env.StartsWith(...)`, `env.Contains(...)`, `env.EndsWith(...)`. Building on the `my-platform` module scaffolded in [Quick Start](./quick-start.md), drop the file below into `my-platform/components/`.
+
+<Tabs groupId="defkit-example">
+<TabItem value="go" label="Go — defkit">
+
+```go
+package components
+
+import "github.com/oam-dev/kubevela/pkg/definition/defkit"
+
+func ChainMethodsDemo() *defkit.ComponentDefinition {
+    image := defkit.String("image").
+        Required().
+        Short("i").
+        Description("Container image reference (e.g. nginx:1.25)")
+
+    appName := defkit.String("appName").
+        Optional().
+        Pattern("^[a-z][a-z0-9-]*$").
+        MinLen(1).
+        MaxLen(48).
+        Description("Application name; must match ^[a-z][a-z0-9-]*$")
+
+    env := defkit.String("env").
+        Values("dev", "staging", "prod").
+        Default("dev").
+        Description("Deployment environment")
+
+    replicas := defkit.Int("replicas").
+        Default(1).
+        Min(1).
+        Max(20).
+        Description("Number of pod replicas")
+
+    logLevel := defkit.Enum("logLevel").
+        Values("debug", "info", "warn", "error").
+        Default("info").
+        Description("Log verbosity level")
+
+    labels := defkit.StringKeyMap("labels").
+        Optional().
+        Description("Arbitrary metadata labels spread onto the Deployment")
+
+    ports := defkit.Array("ports").
+        WithFields(
+            defkit.Int("port"),
+            defkit.String("name").Optional(),
+        ).
+        MinItems(1).
+        MaxItems(10).
+        Optional().
+        Description("Container ports; at least one required when provided")
+
+    readOnly := defkit.Bool("readOnly").
+        Default(false).
+        Description("Mount root filesystem read-only")
+
+    return defkit.NewComponent("chain-methods-demo").
+        Description("Exercises chain methods across all parameter types").
+        Workload("apps/v1", "Deployment").
+        Params(image, appName, env, replicas, logLevel, labels, ports, readOnly).
+        Template(chainMethodsDemoTemplate).
+        WithImports("list", "strings")
+}
+
+func chainMethodsDemoTemplate(tpl *defkit.Template) {
+    vela := defkit.VelaCtx()
+
+    image   := defkit.String("image")
+    appName := defkit.String("appName")
+    env     := defkit.String("env")
+    replicas := defkit.Int("replicas")
+    labels  := defkit.StringKeyMap("labels")
+    ports   := defkit.Array("ports").WithFields(
+        defkit.Int("port"),
+        defkit.String("name").Optional(),
+    )
+    readOnly := defkit.Bool("readOnly")
+
+    containerPorts := defkit.NewArray().ForEachWith(ports, func(item *defkit.ItemBuilder) {
+        v := item.Var()
+        item.Set("containerPort", v.Field("port"))
+        item.IfSet("name", func() { item.Set("name", v.Field("name")) })
+    })
+
+    dep := defkit.NewResource("apps/v1", "Deployment").
+        Set("metadata.name", vela.Name()).
+        Set("spec.replicas", replicas).
+        Set("spec.minReadySeconds", replicas.Add(10)).
+        Set("spec.selector.matchLabels[app.oam.dev/component]", vela.Name()).
+        Set("spec.template.metadata.labels[app.oam.dev/component]", vela.Name()).
+        SetIf(labels.IsSet(),   "metadata.labels", labels).
+        SetIf(appName.IsSet(),  "spec.template.metadata.labels[app-name]", appName.Concat("-svc")).
+        SetIf(appName.IsSet(),  "spec.template.metadata.labels[prefixed-name]", appName.Prepend("platform-")).
+        SetIf(env.In("staging", "prod"),  "spec.template.metadata.labels[tier]",         defkit.Lit("production")).
+        SetIf(env.StartsWith("dev"),      "spec.template.metadata.labels[env-class]",    defkit.Lit("non-prod")).
+        SetIf(env.Contains("prod"),       "spec.template.metadata.labels[is-prod]",      defkit.Lit("true")).
+        SetIf(env.EndsWith("ing"),        "spec.template.metadata.labels[is-transient]", defkit.Lit("true")).
+        Set("spec.template.spec.containers[0].name",  vela.Name()).
+        Set("spec.template.spec.containers[0].image", image).
+        SetIf(readOnly.IsTrue(),  "spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem", defkit.Lit(true)).
+        SetIf(readOnly.IsFalse(), "spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem", defkit.Lit(false)).
+        SetIf(ports.IsSet(), "spec.template.spec.containers[0].ports", containerPorts).
+        Set("spec.template.spec.containers[0].resources.requests.cpu", defkit.Lit("100m")).
+        Set("spec.template.spec.containers[0].resources.limits.cpu",   defkit.Lit("200m"))
+
+    tpl.Output(dep)
+}
+
+func init() { defkit.Register(ChainMethodsDemo()) }
 ```
 
-<details>
-<summary>Generated CUE</summary>
+</TabItem>
+<TabItem value="cue" label="CUE — generated">
 
 ```cue
-parameter: {
-    existingResources: *false | bool
-    name?: string
-    if existingResources == false {
-        forceDestroy: *false | bool
-        encryption: *"AES256" | "aws:kms"
-        _validateEncryption: { ... }
-    }
-    if existingResources == true {
-        forceDestroy?: bool
-        encryption?: "AES256" | "aws:kms"
-    }
-}
-```
-
-</details>
-
-### Conditional Fields Inside a Struct
-
-Use `MapParam.ConditionalFields()` when the conditional fields are inside an optional struct:
-
-```go title="conditional_fields.go"
-objectLock := defkit.Object("objectLock").Optional().
-    ConditionalFields(
-        defkit.WhenParam(existingResources.Eq(false)).Params(
-            defkit.Int("retentionDays").Optional().Default(45).Min(1),
-            defkit.Enum("retentionMode").Optional().Default("GOVERNANCE").
-                Values("GOVERNANCE", "COMPLIANCE"),
-        ),
-        defkit.WhenParam(existingResources.Eq(true)).Params(
-            defkit.Int("retentionDays").Min(1),
-            defkit.Enum("retentionMode").Values("GOVERNANCE", "COMPLIANCE"),
-        ),
-    )
-```
-
-## Arithmetic Expressions: `.Add()` / `.Sub()` / `.Mul()` / `.Div()`
-
-Arithmetic operations on numeric parameters. Returns a `Value` that can be passed to `.Set()` or used in further expressions. Generates CUE arithmetic operators.
-
-```go title="Go — defkit"
-port := defkit.Int("port")
-
-// arithmetic expressions
-port.Add(1)    // port + 1
-port.Sub(1)    // port - 1
-port.Mul(2)    // port * 2
-port.Div(2)    // port / 2
-
-deploy.Set("spec.healthPort", port.Add(1000))
-```
-
-```cue title="CUE — generated"
-spec: healthPort: parameter.port + 1000
-```
-
-## String Expressions: `.Concat()` / `.Prepend()` / `.Contains()` / `.StartsWith()` / `.In()`
-
-String manipulation and condition methods on string parameters. `.Concat()` / `.Prepend()` produce string concatenation values. `.Contains()`, `.StartsWith()`, and `.In()` produce boolean condition expressions usable in `.SetIf()` or `.If()` blocks.
-
-```go title="Go — defkit"
-name := defkit.String("name")
-env  := defkit.String("env")
-
-// concatenation values
-name.Concat("-suffix")    // name + "-suffix"
-name.Prepend("prefix-")   // "prefix-" + name
-
-// condition expressions
-env.Contains("prod")                    // strings.Contains(env, "prod")
-env.StartsWith("staging")              // strings.HasPrefix(env, "staging")
-env.In("dev", "staging", "prod")       // env in set
-
-// use in conditional
-deploy.SetIf(env.In("prod", "staging"), "metadata.labels.tier", defkit.Lit("production"))
-```
-
-```cue title="CUE — generated"
-// Concat/Prepend
-metadata: name: parameter.name + "-suffix"
-
-// Contains condition
-if strings.Contains(parameter.env, "prod") {
-    metadata: labels: tier: "production"
-}
-```
-
-## `param.IsSet()` / `param.NotSet()`
-
-Boolean condition expressions for optional parameter presence checks. `.IsSet()` generates a CUE `!= _|_` guard; `.NotSet()` generates an `== _|_` guard. Both return a `Value` usable in `.SetIf()`, `.If()`, `defkit.And()`, etc. Applies to any parameter, including struct field references via `.Field()`.
-
-```go title="Go — defkit"
-tag     := defkit.String("tag").Optional()
-volumes := defkit.Array("volumes").Optional()
-mounts  := defkit.Array("volumeMounts").Optional()
-
-// IsSet — emit field only when tag is provided
-deploy.SetIf(tag.IsSet(), "spec.template.spec.containers[0].image",
-    image.Concat(":").Concat(tag))
-
-// NotSet — fallback when volumeMounts omitted
-deploy.If(defkit.And(volumes.IsSet(), mounts.NotSet())).
-    Set("spec.template.spec.volumeMounts", defkit.Lit("[]"))
-```
-
-```cue title="CUE — generated"
-// IsSet guard
-if parameter["tag"] != _|_ {
-    spec: template: spec: containers: [{image: parameter.image + ":" + parameter.tag}]
-}
-
-// NotSet guard (combined And)
-if parameter["volumes"] != _|_ && parameter["volumeMounts"] == _|_ {
-    spec: template: spec: volumeMounts: []
-}
-```
-
-## Struct Field Access: `.Field(name)`
-
-Access nested fields within struct parameters for use in conditions or `.Set()` calls. Returns a `Value` that references the nested field path. Supports chained condition methods like `.IsSet()`, `.Eq()`, etc.
-
-```go title="Go — defkit"
-config := defkit.Struct("config").WithFields(
-    defkit.Field("enabled", defkit.ParamTypeBool).Default(true),
-    defkit.Field("port", defkit.ParamTypeInt).Default(8080),
+import (
+  "list"
+  "strings"
 )
 
-// reference nested fields
-config.Field("enabled")             // parameter.config.enabled
-config.Field("enabled").IsSet()     // check if config.enabled is set
-config.Field("port").Eq(8080)       // config.port == 8080
-
-deploy.SetIf(config.Field("enabled").IsSet(),
-    "spec.template.metadata.labels.enabled",
-    config.Field("enabled"))
-```
-
-```cue title="CUE — generated"
-if parameter.config.enabled != _|_ {
-    spec: template: metadata: labels: enabled: parameter.config.enabled
+"chain-methods-demo": {
+  type: "component"
+  annotations: {}
+  labels: {}
+  description: "Exercises chain methods across all parameter types"
+  attributes: {
+    workload: {
+      definition: {
+        apiVersion: "apps/v1"
+        kind:       "Deployment"
+      }
+      type: "deployments.apps"
+    }
+  }
+}
+template: {
+  output: {
+    apiVersion: "apps/v1"
+    kind:       "Deployment"
+    metadata: {
+      name: context.name
+      if parameter["labels"] != _|_ {
+        labels: parameter.labels
+      }
+    }
+    spec: {
+      replicas:        parameter.replicas
+      minReadySeconds: parameter.replicas + 10
+      selector: matchLabels: "app.oam.dev/component": context.name
+      template: {
+        metadata: labels: {
+          "app.oam.dev/component": context.name
+          if parameter.env == "staging" || parameter.env == "prod" {
+            "tier": "production"
+          }
+          if parameter["appName"] != _|_ {
+            "app-name":      parameter.appName + "-svc"
+            "prefixed-name": "platform-" + parameter.appName
+          }
+          if strings.Contains(parameter.env, "prod") {
+            "is-prod": "true"
+          }
+          if strings.HasPrefix(parameter.env, "dev") {
+            "env-class": "non-prod"
+          }
+          if strings.HasSuffix(parameter.env, "ing") {
+            "is-transient": "true"
+          }
+        }
+        spec: containers: [{
+          name:  context.name
+          image: parameter.image
+          if !parameter.readOnly {
+            securityContext: readOnlyRootFilesystem: false
+          }
+          if parameter.readOnly {
+            securityContext: readOnlyRootFilesystem: true
+          }
+          resources: {
+            requests: cpu: "100m"
+            limits:   cpu: "200m"
+          }
+          if parameter["ports"] != _|_ {
+            ports: [for v in parameter.ports {
+              containerPort: v.port
+              if v.name != _|_ { name: v.name }
+            }]
+          }
+        }]
+      }
+    }
+  }
+  parameter: {
+    // +usage=Container image reference (e.g. nginx:1.25)
+    // +short=i
+    image!: string
+    // +usage=Application name; must match ^[a-z][a-z0-9-]*$
+    appName?: string & =~"^[a-z][a-z0-9-]*$" & strings.MinRunes(1) & strings.MaxRunes(48)
+    // +usage=Deployment environment
+    env: *"dev" | "staging" | "prod"
+    // +usage=Number of pod replicas
+    replicas: *1 | int & >=1 & <=20
+    // +usage=Log verbosity level
+    logLevel: *"info" | "debug" | "warn" | "error"
+    // +usage=Arbitrary metadata labels spread onto the Deployment
+    labels?: [string]: string
+    // +usage=Container ports; at least one required when provided
+    ports?: list.MinItems(1) & list.MaxItems(10) & [...{
+      port:  int
+      name?: string
+    }]
+    // +usage=Mount root filesystem read-only
+    readOnly: *false | bool
+  }
 }
 ```
+
+</TabItem>
+<TabItem value="application" label="Application YAML">
+
+```yaml title="chain-methods-app.yaml"
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: chain-methods-app
+  namespace: default
+spec:
+  components:
+    - name: chain-methods
+      type: chain-methods-demo
+      properties:
+        image: nginx:1.25
+        appName: my-service
+        env: staging
+        replicas: 3
+        logLevel: debug
+        labels:
+          team: platform
+        ports:
+          - port: 8080
+            name: http
+          - port: 9090
+            name: metrics
+        readOnly: false
+```
+
+</TabItem>
+</Tabs>
+
+Reproduce the CUE on the right with:
+
+```shell
+vela def validate-module ./my-platform
+vela def gen-module ./my-platform -o ./generated-cue
+```
+
+### Apply and verify
+
+Apply the definition and the Application YAML above against a live cluster:
+
+```shell
+vela def apply ./generated-cue/components/chain-methods-demo.cue
+vela up -f chain-methods-app.yaml
+vela status chain-methods-app --namespace default
+```
+
+```
+About:
+
+  Name:       chain-methods-app
+  Namespace:  default
+  Healthy:    true
+  Details:    running
+
+Services:
+
+  - Name: chain-methods
+    Cluster: local
+    Namespace: default
+    Type: chain-methods-demo
+    Health: true
+    No trait applied
+```
+
+Inspect the rendered Deployment to confirm that each chain method produced the expected output. The output below was captured live against a k3d cluster:
+
+```shell
+$ kubectl get deployment chain-methods -n default \
+    -o jsonpath='{.spec.template.metadata.labels}' \
+  | python3 -m json.tool
+{
+    "app-name": "my-service-svc",
+    "app.oam.dev/component": "chain-methods",
+    "is-transient": "true",
+    "prefixed-name": "platform-my-service",
+    "tier": "production"
+}
+
+$ kubectl get deployment chain-methods -n default \
+    -o jsonpath='replicas={.spec.replicas} minReadySeconds={.spec.minReadySeconds} readOnly={.spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem}'
+replicas=3 minReadySeconds=13 readOnly=false
+
+$ kubectl get deployment chain-methods -n default \
+    -o jsonpath='NAME={.metadata.name} READY={.status.readyReplicas}/{.status.replicas}'
+NAME=chain-methods READY=3/3
+```
+
+`env.In("staging","prod")` fires for `env=staging` and writes `tier=production`. `appName.Concat("-svc")` produces `app-name=my-service-svc` and `appName.Prepend("platform-")` produces `prefixed-name=platform-my-service`. `env.EndsWith("ing")` fires for `staging` and writes `is-transient=true`. `replicas=3` with `.Add(10)` yields `minReadySeconds=13`. `ports.MinItems(1).MaxItems(10)` is enforced by the CUE schema at apply time; both ports land as `containerPort` entries in the rendered Deployment.
+
+Clean up afterwards:
+
+```shell
+vela delete chain-methods-app --namespace default --yes
+kubectl delete componentdefinition chain-methods-demo -n vela-system
+```
+
+## Related
+
+- [ComponentDefinition](./definition-component.md) — register workload types
+- [Collection Parameter Types](./param-collection-types.md) — `StringList`, `Array`, `Map`, `DynamicMap`
+- [Complex Parameter Types](./param-complex-types.md) — `Struct`, `Object`, `OneOf`, `ClosedUnion`
+- [Resource Builder](./resource-builder.md) — `NewResource`, `Set`, `SetIf`, array builders
+- [Value Expressions](./value-expressions.md) — `Lit`, `Reference`, `Plus`, `ParamRef`, logical operators

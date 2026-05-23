@@ -366,6 +366,7 @@ module.exports = {
             },
             'platform-engineers/defkit/advanced-api',
             'platform-engineers/defkit/cluster-placement',
+            'platform-engineers/defkit/module-hooks',
             'platform-engineers/defkit/testing',
             'platform-engineers/defkit/examples',
             'platform-engineers/defkit/migration',

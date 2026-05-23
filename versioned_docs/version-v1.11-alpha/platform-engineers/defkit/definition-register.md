@@ -2,7 +2,10 @@
 title: Register & Output
 ---
 
-`defkit.Register(def)` auto-registers a definition when its package is imported. Call it in `init()` so the registration happens automatically when the package is blank-imported. The output methods generate different representations of the definition.
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+`defkit.Register(def)` auto-registers a definition when its package is imported. Call it in `init()` so the registration happens automatically when the package is blank-imported. The output methods generate different representations of the definition. The [Complete Example](#complete-example) at the end of the page shows a real, cluster-verified component together with each output method's actual rendered output.
 
 ## defkit.Register and init()
 
@@ -21,93 +24,293 @@ func Webservice() *defkit.ComponentDefinition {
 func init() { defkit.Register(Webservice()) }
 ```
 
-The `cmd/register/main.go` entry point uses blank imports to trigger all `init()` calls across every package:
+The `cmd/register/main.go` entry point uses blank imports to trigger all `init()` calls across every package, then writes the serialized registry to stdout:
 
 ```go title="cmd/register/main.go"
 package main
 
 import (
     "fmt"
+    "os"
+
     "github.com/oam-dev/kubevela/pkg/definition/defkit"
 
     // Blank imports trigger init() in each package,
-    // registering all definitions automatically
+    // registering all definitions automatically.
     _ "my-platform/components"
-    _ "my-platform/traits"
     _ "my-platform/policies"
+    _ "my-platform/traits"
     _ "my-platform/workflowsteps"
 )
 
 func main() {
-    // Exports all registered definitions as JSON
-    fmt.Println(defkit.ToJSON())
+    output, err := defkit.ToJSON()
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "failed to serialize registry: %v\n", err)
+        os.Exit(1)
+    }
+    fmt.Print(string(output))
 }
 ```
 
-`defkit.ToJSON()` serializes all registered definitions into a JSON payload that `vela def apply-module` reads to apply definitions to the cluster.
+`defkit.ToJSON() ([]byte, error)` serializes every registered definition into a JSON payload that `vela def apply-module` reads to apply definitions to the cluster. Always check the error — there is no panic path; a malformed definition surfaces as a non-nil error here.
 
 ## Output Methods
 
-All four definition types expose the same set of output methods:
+`ComponentDefinition` exposes four output methods; `TraitDefinition`, `PolicyDefinition`, and `WorkflowStepDefinition` expose only the two universal ones (`ToCue` and `ToYAML`).
 
-| Method | Return | Description |
-|---|---|---|
-| `.ToCue() string` | `string` | Generate the CUE definition as a string. |
-| `.ToCueWithImports(imports...) string` | `string` | Generate CUE with explicit import declarations appended. |
-| `.ToYAML() ([]byte, error)` | `[]byte, error` | Generate the Kubernetes YAML manifest for the definition CRD. |
-| `.ToParameterSchema() string` | `string` | Generate only the parameter CUE block (without the full definition). |
-
-## Example Usage
-
-```go title="Go — defkit"
-func Webservice() *defkit.ComponentDefinition {
-    // ...
-    return defkit.NewComponent("webservice").
-        Workload("apps/v1", "Deployment").
-        Params(image, replicas).
-        Template(webserviceTemplate)
-}
-
-// Auto-register when package is imported
-func init() { defkit.Register(Webservice()) }
-
-// Generate output programmatically
-func main() {
-    comp := Webservice()
-
-    cue         := comp.ToCue()               // CUE definition string
-    cueWithImps := comp.ToCueWithImports("strconv", "strings")
-    yamlBytes, err := comp.ToYAML()           // Kubernetes YAML manifest
-    schema      := comp.ToParameterSchema()   // parameter block only
-}
-```
-
-```cue title="Output context"
-// defkit.Register() is called in init():
-// - cmd/register/main.go imports all packages
-// - Blank imports trigger init() which calls Register()
-// - defkit.ToJSON() then exports all registered defs
-//
-// ToCue() output:
-webservice: {
-    type: "component"
-    ...
-}
-template: { ... }
-//
-// ToYAML() output:
-// apiVersion: core.oam.dev/v1beta1
-// kind: ComponentDefinition
-// metadata: name: webservice
-// spec: schematic: cue: template: "..."
-//
-// ToParameterSchema() output:
-// parameter: { image: string, replicas: *1 | int }
-```
+| Method | Return | Applies to | Description |
+|---|---|---|---|
+| `.ToCue() string` | `string` | All four kinds | Generate the CUE definition as a string. |
+| `.ToCueWithImports(imports ...string) string` | `string` | `ComponentDefinition` only | Generate CUE with explicit import declarations prepended. Use `defkit.CUEImports.Strings`, `defkit.CUEImports.Strconv`, etc. for the standard CUE imports. |
+| `.ToParameterSchema() string` | `string` | `ComponentDefinition` only | Generate only the `parameter: { ... }` CUE block (without the full definition wrapper). |
+| `.ToYAML() ([]byte, error)` | `[]byte, error` | All four kinds | Generate the Kubernetes YAML manifest for the X-Definition CRD; the CUE template is embedded in `spec.schematic.cue.template`. |
 
 :::tip
 `ToCue()` and `ToYAML()` are useful in unit tests to assert on the generated output without a live cluster. Use them with `go test` to verify that parameter defaults, types, and structure match expectations.
 :::
+
+## Complete Example
+
+The `register-output-demo` component below is a minimal `ComponentDefinition` (Deployment workload, two parameters) that self-registers via `init()` and exercises all four output methods. Drop the file into the `components/` directory of a defkit module scaffolded via [Quick Start](./quick-start.md), then `vela def apply-module ./my-platform` to register the definition with the cluster. The output panes show the actual bytes that `comp.ToCue()`, `comp.ToCueWithImports(...)`, `comp.ToParameterSchema()`, and `comp.ToYAML()` return for this component — generated by running `go run ./cmd/dump` (or any small driver that calls these methods) against the module and pasted verbatim.
+
+<Tabs groupId="defkit-register-output">
+<TabItem value="go" label="Go — defkit">
+
+```go
+// my-platform/components/register_output_demo.go
+package components
+
+import "github.com/oam-dev/kubevela/pkg/definition/defkit"
+
+func RegisterOutputDemo() *defkit.ComponentDefinition {
+    image := defkit.String("image").Description("Container image")
+    replicas := defkit.Int("replicas").Default(1).Description("Replica count")
+
+    return defkit.NewComponent("register-output-demo").
+        Description("Minimal component demonstrating defkit.Register and the four output methods").
+        Workload("apps/v1", "Deployment").
+        Params(image, replicas).
+        Template(registerOutputDemoTemplate)
+}
+
+func registerOutputDemoTemplate(tpl *defkit.Template) {
+    vela := defkit.VelaCtx()
+    image := defkit.String("image")
+    replicas := defkit.Int("replicas")
+
+    dep := defkit.NewResource("apps/v1", "Deployment").
+        Set("metadata.name", vela.Name()).
+        Set("spec.replicas", replicas).
+        Set("spec.selector.matchLabels[app.oam.dev/component]", vela.Name()).
+        Set("spec.template.metadata.labels[app.oam.dev/component]", vela.Name()).
+        Set("spec.template.spec.containers[0].name", vela.Name()).
+        Set("spec.template.spec.containers[0].image", image)
+    tpl.Output(dep)
+}
+
+// Auto-register when this package is blank-imported by cmd/register.
+func init() { defkit.Register(RegisterOutputDemo()) }
+```
+
+```go
+// cmd/register-output-demo/main.go — exercises every output method on the component.
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/oam-dev/kubevela/pkg/definition/defkit"
+    "my-platform/components"
+)
+
+func main() {
+    comp := components.RegisterOutputDemo()
+
+    fmt.Println(comp.ToCue())
+
+    fmt.Println(comp.ToCueWithImports(
+        defkit.CUEImports.Strings,
+        defkit.CUEImports.Strconv,
+    ))
+
+    fmt.Println(comp.ToParameterSchema())
+
+    yamlBytes, err := comp.ToYAML()
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "ToYAML: %v\n", err)
+        os.Exit(1)
+    }
+    fmt.Print(string(yamlBytes))
+}
+```
+
+</TabItem>
+<TabItem value="tocue" label="ToCue()">
+
+```cue
+"register-output-demo": {
+    type: "component"
+    annotations: {}
+    labels: {}
+    description: "Minimal component demonstrating defkit.Register and the four output methods"
+    attributes: {
+        workload: {
+            definition: {
+                apiVersion: "apps/v1"
+                kind:       "Deployment"
+            }
+            type: "deployments.apps"
+        }
+    }
+}
+template: {
+    output: {
+        apiVersion: "apps/v1"
+        kind:       "Deployment"
+        metadata: {
+            name: context.name
+        }
+        spec: {
+            replicas: parameter.replicas
+            selector: {
+                matchLabels: {
+                    "app.oam.dev/component": context.name
+                }
+            }
+            template: {
+                metadata: {
+                    labels: {
+                        "app.oam.dev/component": context.name
+                    }
+                }
+                spec: {
+                    containers: [{
+                        name:  context.name
+                        image: parameter.image
+                    }]
+                }
+            }
+        }
+    }
+    parameter: {
+        // +usage=Container image
+        image: string
+        // +usage=Replica count
+        replicas: *1 | int
+    }
+}
+```
+
+</TabItem>
+<TabItem value="tocueimp" label="ToCueWithImports(...)">
+
+```cue
+import (
+    "strings"
+    "strconv"
+)
+
+"register-output-demo": {
+    type: "component"
+    annotations: {}
+    labels: {}
+    description: "Minimal component demonstrating defkit.Register and the four output methods"
+    attributes: {
+        workload: {
+            definition: {
+                apiVersion: "apps/v1"
+                kind:       "Deployment"
+            }
+            type: "deployments.apps"
+        }
+    }
+}
+template: {
+    output: {
+        apiVersion: "apps/v1"
+        kind:       "Deployment"
+        metadata: {
+            name: context.name
+        }
+        spec: {
+            replicas: parameter.replicas
+            selector: {
+                matchLabels: {
+                    "app.oam.dev/component": context.name
+                }
+            }
+            template: {
+                metadata: {
+                    labels: {
+                        "app.oam.dev/component": context.name
+                    }
+                }
+                spec: {
+                    containers: [{
+                        name:  context.name
+                        image: parameter.image
+                    }]
+                }
+            }
+        }
+    }
+    parameter: {
+        // +usage=Container image
+        image: string
+        // +usage=Replica count
+        replicas: *1 | int
+    }
+}
+```
+
+> The body is identical to `ToCue()`; `ToCueWithImports(...)` only prepends the `import (...)` block. Use it when the template body references CUE standard-library packages (`strings.ToLower`, `strconv.FormatInt`, `list.Concat`, etc.) that aren't auto-detected.
+
+</TabItem>
+<TabItem value="toparam" label="ToParameterSchema()">
+
+```cue
+parameter: {
+    // +usage=Container image
+    image: string
+    // +usage=Replica count
+    replicas: *1 | int
+}
+```
+
+</TabItem>
+<TabItem value="toyaml" label="ToYAML()">
+
+```yaml
+apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  annotations:
+    definition.oam.dev/description: Minimal component demonstrating defkit.Register
+      and the four output methods
+  name: register-output-demo
+spec:
+  schematic:
+    cue:
+      template: "\"register-output-demo\": {\n\ttype: \"component\"\n\t…\n}\ntemplate: {\n\t…\n}\n"
+  workload:
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+```
+
+> The full CUE body is embedded as a single quoted string inside `spec.schematic.cue.template` (newlines escaped as `\n`, tabs as `\t`). The full string is omitted above for readability — run `go run ./cmd/register-output-demo` to dump the byte-exact YAML.
+
+</TabItem>
+</Tabs>
+
+Apply the registered definition with the conventional pipeline:
+
+```shell
+vela def apply-module ./my-platform        # discovers every Register() via the cmd/register entry point
+vela up -f probe-application.yaml           # deploys an Application that references the component
+```
 
 ## Related
 

@@ -77,7 +77,7 @@ logLevel := defkit.Enum("logLevel").
 cpu      := defkit.String("cpu").Optional().
                Description(`CPU request, e.g. "500m"`)
 
-env := defkit.List("env").Optional().
+env := defkit.Array("env").Optional().
     Description("Environment variables").
     WithFields(
         defkit.String("name"),
@@ -109,8 +109,17 @@ labels := defkit.StringKeyMap("labels").Optional().
 | `[...]` open/heterogeneous list | `defkit.List()` |
 | `// +usage=...` comments | `.Description("...")` |
 
-:::caution Breaking change: bare parameters are required by default
-In defkit, a bare parameter (no `.Optional()`, no `.Default()`) compiles to a CUE required field (`field: type`). This matches the CUE convention but means you **must** call `.Optional()` for any param that was previously optional (`field?: type` in CUE). Failing to do so will make the parameter mandatory in the generated schema.
+:::caution Breaking change: bare parameters are mandatory by default
+In defkit, a bare parameter (no `.Optional()`, no `.Default()`) emits a CUE field with **no marker** — `field: type`. Without a default, that field must resolve to a value at unification time, so users **must** provide it. This is stricter than the CUE `field?: type` form (which allows the field to be absent). It is NOT the `field!: type` form — that requires `.Required()`, which forces the user to set the field explicitly even if a default exists. In short:
+
+| You write | CUE emits | Meaning |
+|---|---|---|
+| `defkit.String("x")` | `x: string` | mandatory unless a default satisfies it |
+| `defkit.String("x").Optional()` | `x?: string` | may be absent |
+| `defkit.String("x").Default("foo")` | `x: *"foo" \| string` | mandatory, but the default satisfies it |
+| `defkit.String("x").Required()` | `x!: string` | user must explicitly set, even with a default |
+
+You **must** call `.Optional()` for any param that was previously optional (`field?: type` in CUE) — otherwise users hit a "field is required" error.
 :::
 
 ## Step 2 — Migrate the Template Body
@@ -122,20 +131,24 @@ output: {
     metadata: name: context.name
     spec: {
         replicas: parameter.replicas
-        template: spec: containers: [{
-            name:  context.name
-            image: parameter.image
-            if parameter.cpu != _|_ {
-                resources: limits: cpu: parameter.cpu
-            }
-            if parameter.env != _|_ {
-                env: parameter.env
-            }
-            ports: [for p in parameter.ports {
-                containerPort: p.port
-                protocol:      p.protocol
+        selector: matchLabels: "app.oam.dev/component": context.name
+        template: {
+            metadata: labels: "app.oam.dev/component": context.name
+            spec: containers: [{
+                name:  context.name
+                image: parameter.image
+                if parameter.cpu != _|_ {
+                    resources: limits: cpu: parameter.cpu
+                }
+                if parameter.env != _|_ {
+                    env: parameter.env
+                }
+                ports: [for p in parameter.ports {
+                    containerPort: p.port
+                    protocol:      p.protocol
+                }]
             }]
-        }]
+        }
     }
 }
 ```
@@ -159,6 +172,8 @@ func myTemplate(tpl *defkit.Template) {
     deployment := defkit.NewResource("apps/v1", "Deployment").
         Set("metadata.name", vela.Name()).
         Set("spec.replicas", replicas).
+        Set("spec.selector.matchLabels[app.oam.dev/component]", vela.Name()).
+        Set("spec.template.metadata.labels[app.oam.dev/component]", vela.Name()).
         Set("spec.template.spec.containers[0].name",  vela.Name()).
         Set("spec.template.spec.containers[0].image", image).
         Set("spec.template.spec.containers[0].ports", containerPorts).
@@ -168,6 +183,10 @@ func myTemplate(tpl *defkit.Template) {
     tpl.Output(deployment)
 }
 ```
+
+:::caution Deployments require selector ↔ template.labels parity
+A Deployment is invalid without `spec.selector.matchLabels` matching `spec.template.metadata.labels`. Both the CUE and Go templates above use `app.oam.dev/component: context.name` (the standard KubeVela component-label convention) so the workload that lands in the cluster passes the admission webhook. If you forget this on the migration, both forms fail identically — which is itself a small proof of semantic equivalence between CUE and defkit.
+:::
 
 **Mapping rules:**
 
@@ -243,38 +262,59 @@ func init() { defkit.Register(MyTrait()) }
 ## Step 4 — Migrate Health & Status
 
 ```cue title="CUE — health and status"
-isHealth: (
-    context.output.status.observedGeneration ==
-    context.output.metadata.generation
-) && (
-    context.output.status.readyReplicas ==
-    context.output.status.replicas
-) && (context.output.status.replicas > 0)
+isHealth: context.output.status.observedGeneration == context.output.metadata.generation &&
+  context.output.status.readyReplicas == context.output.status.replicas &&
+  context.output.status.replicas > 0
 ```
 
-```go title="Go — defkit"
+:::caution Keep `isHealth` line-break-safe
+The KubeVela controller's healthPolicy CUE evaluator is sensitive to where you break long expressions. Break **after `&&`** (or keep the whole thing on one line). **Do not** break a comparison so that `==` ends a line — `field1 ==\nfield2` evaluates to `false` even when both fields are equal. This is one of the reasons the doc recommends `HealthPolicyExpr` (Option B below): the builder emits a single-line, controller-safe expression.
+:::
+
+**Option A — use the built-in preset** (matches Deployment's standard readiness check):
+
+```go title="Go — defkit (preset)"
 return defkit.NewComponent("webservice").
     Workload("apps/v1", "Deployment").
-
     HealthPolicy(defkit.DeploymentHealth().Build()).
     CustomStatus(defkit.DeploymentStatus().Build()).
+    Params(image, replicas).
+    Template(webserviceTemplate)
+```
 
-    HealthPolicy(
-        defkit.DeploymentHealth().
-            RequirePositiveReplicas(true).
-            Build(),
-    ).
+**Option B — composable health expression** (closest match to the custom CUE above; type-safe, no raw strings):
 
+```go title="Go — defkit (HealthExpr)"
+h := defkit.Health()
+
+return defkit.NewComponent("webservice").
+    Workload("apps/v1", "Deployment").
+    HealthPolicyExpr(h.And(
+        h.Field("status.observedGeneration").Eq(h.FieldRef("metadata.generation")),
+        h.Field("status.readyReplicas").Eq(h.FieldRef("status.replicas")),
+        h.Field("status.replicas").Gt(0),
+    )).
+    CustomStatus(defkit.DeploymentStatus().Build()).
+    Params(image, replicas).
+    Template(webserviceTemplate)
+```
+
+**Option C — raw CUE escape hatch** (when you need CUE features the builder doesn't expose):
+
+```go title="Go — defkit (raw)"
+return defkit.NewComponent("webservice").
+    Workload("apps/v1", "Deployment").
     HealthPolicy(`isHealth: context.output.status.phase == "Running"`).
-
+    CustomStatus(defkit.DeploymentStatus().Build()).
     Params(image, replicas).
     Template(webserviceTemplate)
 ```
 
 **Key rules:**
-- `defkit.DeploymentHealth().Build()` generates the standard Deployment readiness check.
-- `defkit.DeploymentStatus().Build()` generates the standard status message.
-- Pass a raw CUE string to `.HealthPolicy()` / `.CustomStatus()` when you need a non-standard workload check.
+- Pick ONE of `.HealthPolicy(string)` or `.HealthPolicyExpr(HealthExpression)`. Both are setters — calling them more than once on a single component overwrites the prior value. Same for `.CustomStatus(string)` / its `Expr` variants.
+- `defkit.DeploymentHealth().Build()` produces the standard preset string — equivalent in spirit to the "before" CUE, but uses the consolidated `ready: {…} & {…}` shape and the `_isHealth` / disable-annotation pattern (see [Health & Status DSL](./health-status-dsl.md)).
+- `defkit.DeploymentStatus().Build()` produces the standard `Ready: X/Y` status message.
+- For custom checks (`replicas > 0`, specific conditions, etc.), prefer the composable `defkit.Health()` API (Option B) over raw CUE — it stays type-checked and refactor-friendly.
 
 ## Step 5 — Apply Migrated Definitions
 

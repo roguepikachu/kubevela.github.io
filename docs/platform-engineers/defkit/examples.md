@@ -2,13 +2,23 @@
 title: Full Examples
 ---
 
-Complete end-to-end definition examples — one per definition type — showing real-world usage patterns with full Go code and generated CUE output.
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+Complete end-to-end definition examples — one per definition type — showing real-world usage patterns with full Go source, generated definition YAML, and a working `Application` validated against a live cluster.
+
+All Go sources below are taken from the [`kubevela/vela-go-definitions`](https://github.com/kubevela/vela-go-definitions) repository — each section links to its canonical file.
 
 ## Component Definition — Task
 
 A complete task component that runs a one-time Job to completion. Uses `JobHealth`/`CustomStatus` presets, `OneOf` for typed volume variants, `Each` for volumeMount/volume array mapping, and `MapVariant` for per-type volume configuration.
 
-```go title="Go — components/task.go"
+> Source: [`components/task.go`](https://github.com/kubevela/vela-go-definitions/blob/main/components/task.go).
+
+<Tabs>
+<TabItem value="go" label="Go — defkit">
+
+```go title="components/task.go"
 package components
 
 import (
@@ -199,7 +209,10 @@ func init() {
 }
 ```
 
-```yaml title="Generated — ComponentDefinition (vela def apply-module --dry-run)"
+</TabItem>
+<TabItem value="cue" label="Generated — definition YAML">
+
+```yaml title="ComponentDefinition (vela def apply-module --dry-run)"
 apiVersion: core.oam.dev/v1beta1
 kind: ComponentDefinition
 metadata:
@@ -213,236 +226,236 @@ spec:
     cue:
       template: |
         output: {
-                apiVersion: "batch/v1"
-                kind:       "Job"
-                metadata: name: "\(context.appName)-\(context.name)"
-                spec: {
-                        parallelism: parameter.count
-                        completions: parameter.count
-                        template: {
-                                metadata: {
-                                        labels: {
-                                                if parameter["labels"] != _|_ {
-                                                        parameter.labels
-                                                }
-                                                "app.oam.dev/name":      context.appName
-                                                "app.oam.dev/component": context.name
-                                        }
-                                        if parameter["annotations"] != _|_ {
-                                                annotations: parameter.annotations
-                                        }
-                                }
-                                spec: {
-                                        restartPolicy: parameter.restart
-                                        containers: [{
-                                                name:  context.name
-                                                image: parameter.image
-                                                if parameter["cpu"] != _|_ {
-                                                        resources: {
-                                                                limits: cpu:   parameter.cpu
-                                                                requests: cpu: parameter.cpu
-                                                        }
-                                                }
-                                                if parameter["memory"] != _|_ {
-                                                        resources: {
-                                                                limits: memory:   parameter.memory
-                                                                requests: memory: parameter.memory
-                                                        }
-                                                }
-                                                if parameter["cmd"] != _|_ {
-                                                        command: parameter.cmd
-                                                }
-                                                if parameter["env"] != _|_ {
-                                                        env: parameter.env
-                                                }
-                                                if parameter["imagePullPolicy"] != _|_ {
-                                                        imagePullPolicy: parameter.imagePullPolicy
-                                                }
-                                                if parameter["volumes"] != _|_ {
-                                                        volumeMounts: [for v in parameter.volumes {
-                                                                {
-                                                                        mountPath: v.mountPath
-                                                                        name:      v.name
-                                                                }
-                                                        }]
-                                                }
-                                        }]
-                                        if parameter["imagePullSecrets"] != _|_ {
-                                                imagePullSecrets: [for v in parameter.imagePullSecrets {name: v}]
-                                        }
-                                        if parameter["volumes"] != _|_ {
-                                                volumes: [for v in parameter.volumes {
-                                                        {
-                                                                name: v.name
-                                                                if v.type == "pvc" {
-                                                                        persistentVolumeClaim: claimName: v.claimName
-                                                                }
-                                                                if v.type == "configMap" {
-                                                                        configMap: {
-                                                                                defaultMode: v.defaultMode
-                                                                                if v.items != _|_ {
-                                                                                        items: v.items
-                                                                                }
-                                                                                name: v.cmName
-                                                                        }
-                                                                }
-                                                                if v.type == "secret" {
-                                                                        secret: {
-                                                                                defaultMode: v.defaultMode
-                                                                                if v.items != _|_ {
-                                                                                        items: v.items
-                                                                                }
-                                                                                secretName: v.secretName
-                                                                        }
-                                                                }
-                                                                if v.type == "emptyDir" {
-                                                                        emptyDir: medium: v.medium
-                                                                }
-                                                        }
-                                                }]
-                                        }
-                                }
-                        }
-                }
+        	apiVersion: "batch/v1"
+        	kind:       "Job"
+        	metadata: name: "\(context.appName)-\(context.name)"
+        	spec: {
+        		parallelism: parameter.count
+        		completions: parameter.count
+        		template: {
+        			metadata: {
+        				labels: {
+        					if parameter["labels"] != _|_ {
+        						parameter.labels
+        					}
+        					"app.oam.dev/name":      context.appName
+        					"app.oam.dev/component": context.name
+        				}
+        				if parameter["annotations"] != _|_ {
+        					annotations: parameter.annotations
+        				}
+        			}
+        			spec: {
+        				restartPolicy: parameter.restart
+        				containers: [{
+        					name:  context.name
+        					image: parameter.image
+        					if parameter["cpu"] != _|_ {
+        						resources: {
+        							limits: cpu:   parameter.cpu
+        							requests: cpu: parameter.cpu
+        						}
+        					}
+        					if parameter["memory"] != _|_ {
+        						resources: {
+        							limits: memory:   parameter.memory
+        							requests: memory: parameter.memory
+        						}
+        					}
+        					if parameter["cmd"] != _|_ {
+        						command: parameter.cmd
+        					}
+        					if parameter["env"] != _|_ {
+        						env: parameter.env
+        					}
+        					if parameter["imagePullPolicy"] != _|_ {
+        						imagePullPolicy: parameter.imagePullPolicy
+        					}
+        					if parameter["volumes"] != _|_ {
+        						volumeMounts: [for v in parameter.volumes {
+        							{
+        								mountPath: v.mountPath
+        								name:      v.name
+        							}
+        						}]
+        					}
+        				}]
+        				if parameter["imagePullSecrets"] != _|_ {
+        					imagePullSecrets: [for v in parameter.imagePullSecrets {name: v}]
+        				}
+        				if parameter["volumes"] != _|_ {
+        					volumes: [for v in parameter.volumes {
+        						{
+        							name: v.name
+        							if v.type == "pvc" {
+        								persistentVolumeClaim: claimName: v.claimName
+        							}
+        							if v.type == "configMap" {
+        								configMap: {
+        									defaultMode: v.defaultMode
+        									if v.items != _|_ {
+        										items: v.items
+        									}
+        									name: v.cmName
+        								}
+        							}
+        							if v.type == "secret" {
+        								secret: {
+        									defaultMode: v.defaultMode
+        									if v.items != _|_ {
+        										items: v.items
+        									}
+        									secretName: v.secretName
+        								}
+        							}
+        							if v.type == "emptyDir" {
+        								emptyDir: medium: v.medium
+        							}
+        						}
+        					}]
+        				}
+        			}
+        		}
+        	}
         }
         parameter: {
-                // +usage=Specify the labels in the workload
-                labels?: [string]: string
-                // +usage=Specify the annotations in the workload
-                annotations?: [string]: string
-                // +usage=Specify number of tasks to run in parallel
-                // +short=c
-                count: *1 | int
-                // +usage=Which image would you like to use for your service
-                // +short=i
-                image: string
-                // +usage=Specify image pull policy for your service
-                imagePullPolicy?: "Always" | "Never" | "IfNotPresent"
-                // +usage=Specify image pull secrets for your service
-                imagePullSecrets?: [...string]
-                // +usage=Define the job restart policy, the value can only be Never or OnFailure. By default, it's Never.
-                restart: *"Never" | string
-                // +usage=Commands to run in the container
-                cmd?: [...string]
-                // +usage=Define arguments by using environment variables
-                env?: [...{
-                        // +usage=Environment variable name
-                        name: string
-                        // +usage=The value of the environment variable
-                        value?: string
-                        // +usage=Specifies a source the value of this var should come from
-                        valueFrom?: {
-                                // +usage=Selects a key of a secret in the pod's namespace
-                                secretKeyRef?: {
-                                        // +usage=The name of the secret in the pod's namespace to select from
-                                        name: string
-                                        // +usage=The key of the secret to select from. Must be a valid secret key
-                                        key: string
-                                }
-                                // +usage=Selects a key of a config map in the pod's namespace
-                                configMapKeyRef?: {
-                                        // +usage=The name of the config map in the pod's namespace to select from
-                                        name: string
-                                        // +usage=The key of the config map to select from. Must be a valid secret key
-                                        key: string
-                                }
-                        }
-                }]
-                // +usage=Number of CPU units for the service, like `0.5` (0.5 CPU core), `1` (1 CPU core)
-                cpu?: string
-                // +usage=Specifies the attributes of the memory resource required for the container.
-                memory?: string
-                // +usage=Declare volumes and volumeMounts
-                volumes?: [...{
-                        name:      string
-                        mountPath: string
-                        // +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir", default to emptyDir
-                        type: *"emptyDir" | "pvc" | "configMap" | "secret"
-                        if type == "pvc" {
-                                claimName: string
-                        }
-                        if type == "configMap" {
-                                defaultMode: *420 | int
-                                cmName:      string
-                                items?: [...{
-                                        key:  string
-                                        path: string
-                                        mode: *511 | int
-                                }]
-                        }
-                        if type == "secret" {
-                                defaultMode: *420 | int
-                                secretName:  string
-                                items?: [...{
-                                        key:  string
-                                        path: string
-                                        mode: *511 | int
-                                }]
-                        }
-                        if type == "emptyDir" {
-                                medium: *"" | "Memory"
-                        }
-                }]
-                // +usage=Instructions for assessing whether the container is alive.
-                livenessProbe?: #HealthProbe
-                // +usage=Instructions for assessing whether the container is in a suitable state to serve traffic.
-                readinessProbe?: #HealthProbe
+        	// +usage=Specify the labels in the workload
+        	labels?: [string]: string
+        	// +usage=Specify the annotations in the workload
+        	annotations?: [string]: string
+        	// +usage=Specify number of tasks to run in parallel
+        	// +short=c
+        	count: *1 | int
+        	// +usage=Which image would you like to use for your service
+        	// +short=i
+        	image: string
+        	// +usage=Specify image pull policy for your service
+        	imagePullPolicy?: "Always" | "Never" | "IfNotPresent"
+        	// +usage=Specify image pull secrets for your service
+        	imagePullSecrets?: [...string]
+        	// +usage=Define the job restart policy, the value can only be Never or OnFailure. By default, it's Never.
+        	restart: *"Never" | string
+        	// +usage=Commands to run in the container
+        	cmd?: [...string]
+        	// +usage=Define arguments by using environment variables
+        	env?: [...{
+        		// +usage=Environment variable name
+        		name: string
+        		// +usage=The value of the environment variable
+        		value?: string
+        		// +usage=Specifies a source the value of this var should come from
+        		valueFrom?: {
+        			// +usage=Selects a key of a secret in the pod's namespace
+        			secretKeyRef?: {
+        				// +usage=The name of the secret in the pod's namespace to select from
+        				name: string
+        				// +usage=The key of the secret to select from. Must be a valid secret key
+        				key: string
+        			}
+        			// +usage=Selects a key of a config map in the pod's namespace
+        			configMapKeyRef?: {
+        				// +usage=The name of the config map in the pod's namespace to select from
+        				name: string
+        				// +usage=The key of the config map to select from. Must be a valid secret key
+        				key: string
+        			}
+        		}
+        	}]
+        	// +usage=Number of CPU units for the service, like `0.5` (0.5 CPU core), `1` (1 CPU core)
+        	cpu?: string
+        	// +usage=Specifies the attributes of the memory resource required for the container.
+        	memory?: string
+        	// +usage=Declare volumes and volumeMounts
+        	volumes?: [...{
+        		name:      string
+        		mountPath: string
+        		// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir", default to emptyDir
+        		type: *"emptyDir" | "pvc" | "configMap" | "secret"
+        		if type == "pvc" {
+        			claimName: string
+        		}
+        		if type == "configMap" {
+        			defaultMode: *420 | int
+        			cmName:      string
+        			items?: [...{
+        				key:  string
+        				path: string
+        				mode: *511 | int
+        			}]
+        		}
+        		if type == "secret" {
+        			defaultMode: *420 | int
+        			secretName:  string
+        			items?: [...{
+        				key:  string
+        				path: string
+        				mode: *511 | int
+        			}]
+        		}
+        		if type == "emptyDir" {
+        			medium: *"" | "Memory"
+        		}
+        	}]
+        	// +usage=Instructions for assessing whether the container is alive.
+        	livenessProbe?: #HealthProbe
+        	// +usage=Instructions for assessing whether the container is in a suitable state to serve traffic.
+        	readinessProbe?: #HealthProbe
         }
         #HealthProbe: {
-                // +usage=Instructions for assessing container health by executing a command. Either this attribute or the httpGet attribute or the tcpSocket attribute MUST be specified. This attribute is mutually exclusive with both the httpGet attribute and the tcpSocket attribute.
-                exec?: {
-                        // +usage=A command to be executed inside the container to assess its health. Each space delimited token of the command is a separate array element. Commands exiting 0 are considered to be successful probes, whilst all other exit codes are considered failures.
-                        command: [...string]
-                }
-                // +usage=Instructions for assessing container health by executing an HTTP GET request. Either this attribute or the exec attribute or the tcpSocket attribute MUST be specified. This attribute is mutually exclusive with both the exec attribute and the tcpSocket attribute.
-                httpGet?: {
-                        // +usage=The endpoint, relative to the port, to which the HTTP GET request should be directed.
-                        path: string
-                        // +usage=The TCP socket within the container to which the HTTP GET request should be directed.
-                        port: int
-                        httpHeaders?: [...{
-                                name:  string
-                                value: string
-                        }]
-                }
-                // +usage=Instructions for assessing container health by probing a TCP socket. Either this attribute or the exec attribute or the httpGet attribute MUST be specified. This attribute is mutually exclusive with both the exec attribute and the httpGet attribute.
-                tcpSocket?: {
-                        // +usage=The TCP socket within the container that should be probed to assess container health.
-                        port: int
-                }
-                // +usage=Number of seconds after the container is started before the first probe is initiated.
-                initialDelaySeconds: *0 | int
-                // +usage=How often, in seconds, to execute the probe.
-                periodSeconds: *10 | int
-                // +usage=Number of seconds after which the probe times out.
-                timeoutSeconds: *1 | int
-                // +usage=Minimum consecutive successes for the probe to be considered successful after having failed.
-                successThreshold: *1 | int
-                // +usage=Number of consecutive failures required to determine the container is not alive (liveness probe) or not ready (readiness probe).
-                failureThreshold: *3 | int
+        	// +usage=Instructions for assessing container health by executing a command. Either this attribute or the httpGet attribute or the tcpSocket attribute MUST be specified. This attribute is mutually exclusive with both the httpGet attribute and the tcpSocket attribute.
+        	exec?: {
+        		// +usage=A command to be executed inside the container to assess its health. Each space delimited token of the command is a separate array element. Commands exiting 0 are considered to be successful probes, whilst all other exit codes are considered failures.
+        		command: [...string]
+        	}
+        	// +usage=Instructions for assessing container health by executing an HTTP GET request. Either this attribute or the exec attribute or the tcpSocket attribute MUST be specified. This attribute is mutually exclusive with both the exec attribute and the tcpSocket attribute.
+        	httpGet?: {
+        		// +usage=The endpoint, relative to the port, to which the HTTP GET request should be directed.
+        		path: string
+        		// +usage=The TCP socket within the container to which the HTTP GET request should be directed.
+        		port: int
+        		httpHeaders?: [...{
+        			name:  string
+        			value: string
+        		}]
+        	}
+        	// +usage=Instructions for assessing container health by probing a TCP socket. Either this attribute or the exec attribute or the httpGet attribute MUST be specified. This attribute is mutually exclusive with both the exec attribute and the httpGet attribute.
+        	tcpSocket?: {
+        		// +usage=The TCP socket within the container that should be probed to assess container health.
+        		port: int
+        	}
+        	// +usage=Number of seconds after the container is started before the first probe is initiated.
+        	initialDelaySeconds: *0 | int
+        	// +usage=How often, in seconds, to execute the probe.
+        	periodSeconds: *10 | int
+        	// +usage=Number of seconds after which the probe times out.
+        	timeoutSeconds: *1 | int
+        	// +usage=Minimum consecutive successes for the probe to be considered successful after having failed.
+        	successThreshold: *1 | int
+        	// +usage=Number of consecutive failures required to determine the container is not alive (liveness probe) or not ready (readiness probe).
+        	failureThreshold: *3 | int
         }
   status:
     customStatus: |-
       status: {
-        active:    *0 | int
-        failed:    *0 | int
-        succeeded: *0 | int
+      	active:    *0 | int
+      	failed:    *0 | int
+      	succeeded: *0 | int
       } & {
-        if context.output.status.active != _|_ {
-                active: context.output.status.active
-        }
-        if context.output.status.failed != _|_ {
-                failed: context.output.status.failed
-        }
-        if context.output.status.succeeded != _|_ {
-                succeeded: context.output.status.succeeded
-        }
+      	if context.output.status.active != _|_ {
+      		active: context.output.status.active
+      	}
+      	if context.output.status.failed != _|_ {
+      		failed: context.output.status.failed
+      	}
+      	if context.output.status.succeeded != _|_ {
+      		succeeded: context.output.status.succeeded
+      	}
       }
       message: "Active/Failed/Succeeded:\(status.active)/\(status.failed)/\(status.succeeded)"
     healthPolicy: |-
       succeeded: *0 | int
       if context.output.status.succeeded != _|_ {
-        succeeded: context.output.status.succeeded
+      	succeeded: context.output.status.succeeded
       }
       isHealth: succeeded == context.output.spec.parallelism
   workload:
@@ -452,11 +465,63 @@ spec:
     type: jobs.batch
 ```
 
+</TabItem>
+<TabItem value="application" label="Application YAML">
+
+```yaml title="task-demo-app.yaml"
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: task-demo
+  namespace: default
+spec:
+  components:
+    - name: hello-task
+      type: task
+      properties:
+        image: busybox:latest
+        count: 1
+        restart: Never
+        cmd: ["sh", "-c", "echo hello && sleep 5 && echo done"]
+```
+
+</TabItem>
+</Tabs>
+
+Apply and verify (output captured live from k3d):
+
+```shell
+vela def apply ./vela-templates/definitions/component/task.cue
+vela up -f task-demo-app.yaml
+```
+
+```
+NAME        COMPONENT    TYPE   PHASE     HEALTHY   STATUS                          AGE
+task-demo   hello-task   task   running   true      Active/Failed/Succeeded:0/0/1   51s
+```
+
+The component renders to a `batch/v1` Job named `<appName>-<componentName>`:
+
+```shell
+$ kubectl get job task-demo-hello-task -n default \
+    -o jsonpath='completions={.spec.completions} image={.spec.template.spec.containers[0].image} restartPolicy={.spec.template.spec.restartPolicy} status={.status.succeeded}'
+completions=1 image=busybox:latest restartPolicy=Never status=1
+
+$ kubectl get job task-demo-hello-task -n default \
+    -o jsonpath='{.spec.template.spec.containers[0].command}'
+["sh","-c","echo hello && sleep 5 && echo done"]
+```
+
 ## Trait Definition — CPUScaler
 
 A complete cpuscaler trait that creates an HPA resource to automatically scale the component based on CPU usage. Demonstrates `tpl.Outputs()` for emitting a secondary resource from a trait.
 
-```go title="Go — traits/cpuscaler.go"
+> Source: [`traits/cpuscaler.go`](https://github.com/kubevela/vela-go-definitions/blob/main/traits/cpuscaler.go).
+
+<Tabs>
+<TabItem value="go" label="Go — defkit">
+
+```go title="traits/cpuscaler.go"
 package traits
 
 import "github.com/oam-dev/kubevela/pkg/definition/defkit"
@@ -493,7 +558,10 @@ func init() {
 }
 ```
 
-```yaml title="Generated — TraitDefinition (vela def apply-module --dry-run)"
+</TabItem>
+<TabItem value="cue" label="Generated — definition YAML">
+
+```yaml title="TraitDefinition (vela def apply-module --dry-run)"
 apiVersion: core.oam.dev/v1beta1
 kind: TraitDefinition
 metadata:
@@ -539,11 +607,74 @@ spec:
         }
 ```
 
+</TabItem>
+<TabItem value="application" label="Application YAML">
+
+```yaml title="cpuscaler-demo-app.yaml"
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: cpuscaler-demo
+  namespace: default
+spec:
+  components:
+    - name: scaled-web
+      type: webservice
+      properties:
+        image: nginx:stable
+        ports:
+          - port: 80
+            expose: false
+        cpu: "100m"
+      traits:
+        - type: cpuscaler
+          properties:
+            min: 1
+            max: 3
+            cpuUtil: 50
+```
+
+</TabItem>
+</Tabs>
+
+Apply and verify (output captured live from k3d):
+
+```shell
+vela def apply ./vela-templates/definitions/trait/cpuscaler.cue
+vela up -f cpuscaler-demo-app.yaml
+```
+
+```
+NAME             COMPONENT    TYPE         PHASE     HEALTHY   STATUS      AGE
+cpuscaler-demo   scaled-web   webservice   running   true      Ready:1/1   51s
+```
+
+The trait emits a sibling `HorizontalPodAutoscaler` that targets the component's Deployment:
+
+```shell
+$ kubectl get hpa -n default
+NAME         REFERENCE               TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+scaled-web   Deployment/scaled-web   cpu: 0%/50%   1         3         1          71s
+
+$ kubectl get hpa scaled-web -n default \
+    -o jsonpath='kind={.spec.scaleTargetRef.kind} target={.spec.scaleTargetRef.name} min={.spec.minReplicas} max={.spec.maxReplicas}'
+kind=Deployment target=scaled-web min=1 max=3
+```
+
 ## Policy Definition — Apply Once
 
 A complete apply-once policy that allows configuration drift for applied resources. Demonstrates `defkit.NewPolicy` with inline `Helper` type definitions and `WithSchemaRef` for type reuse across params.
 
-```go title="Go — policies/apply_once.go"
+> Source: [`policies/apply_once.go`](https://github.com/kubevela/vela-go-definitions/blob/main/policies/apply_once.go).
+
+:::info
+Policies use only `.Params()` — no `.Template()` — because KubeVela's built-in engine processes policy params directly. `.Helper("TypeName", struct)` registers a named CUE type (`#TypeName`) that can be referenced via `.WithSchemaRef("TypeName")` in other params.
+:::
+
+<Tabs>
+<TabItem value="go" label="Go — defkit">
+
+```go title="policies/apply_once.go"
 package policies
 
 import "github.com/oam-dev/kubevela/pkg/definition/defkit"
@@ -593,7 +724,10 @@ func init() {
 }
 ```
 
-```yaml title="Generated — PolicyDefinition (vela def apply-module --dry-run)"
+</TabItem>
+<TabItem value="cue" label="Generated — definition YAML">
+
+```yaml title="PolicyDefinition (vela def apply-module --dry-run)"
 apiVersion: core.oam.dev/v1beta1
 kind: PolicyDefinition
 metadata:
@@ -615,7 +749,7 @@ spec:
         #ApplyOncePolicyRule: {
         	// +usage=Specify how to select the targets of the rule
         	selector?: #ResourcePolicyRuleSelector
-        	// +usage=Strategy for resource level configuration drift behaviour
+        	// +usage=Specify the strategy for configuring the resource level configuration drift behaviour
         	strategy: #ApplyOnceStrategy
         }
         #ResourcePolicyRuleSelector: {
@@ -635,20 +769,74 @@ spec:
         parameter: {
         	// +usage=Whether to enable apply-once for the whole application
         	enable: *false | bool
-        	// +usage=Rules for configuring apply-once policy in resource level
+        	// +usage=Specify the rules for configuring apply-once policy in resource level
         	rules?: [...#ApplyOncePolicyRule]
         }
 ```
 
-:::info
-Policies use only `.Params()` — no `.Template()` — because KubeVela's built-in engine processes policy params directly. `.Helper("TypeName", struct)` registers a named CUE type (`#TypeName`) that can be referenced via `.WithSchemaRef("TypeName")` in other params.
-:::
+</TabItem>
+<TabItem value="application" label="Application YAML">
+
+```yaml title="apply-once-demo-app.yaml"
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: apply-once-demo
+  namespace: default
+spec:
+  components:
+    - name: drift-tolerant
+      type: webservice
+      properties:
+        image: nginx:stable
+        ports:
+          - port: 80
+            expose: false
+  policies:
+    - name: stable
+      type: apply-once
+      properties:
+        enable: true
+```
+
+</TabItem>
+</Tabs>
+
+Apply and verify (output captured live from k3d):
+
+```shell
+vela def apply ./vela-templates/definitions/policy/apply-once.cue
+vela up -f apply-once-demo-app.yaml
+```
+
+```
+NAME              COMPONENT        TYPE         PHASE     HEALTHY   STATUS      AGE
+apply-once-demo   drift-tolerant   webservice   running   true      Ready:1/1   51s
+```
+
+The policy is recorded on the Application's spec but emits no Kubernetes resources of its own — it changes how the controller reconciles existing ones:
+
+```shell
+$ kubectl get app apply-once-demo -n default -o jsonpath='{.spec.policies}' | python3 -m json.tool
+[
+    {
+        "name": "stable",
+        "properties": {"enable": true},
+        "type": "apply-once"
+    }
+]
+```
 
 ## WorkflowStep Definition — Apply Component
 
 A complete apply-component workflow step. The simplest definition type — workflow steps often require no template at all because the step execution is handled by KubeVela's built-in step executor.
 
-```go title="Go — workflowsteps/apply_component.go"
+> Source: [`workflowsteps/apply_component.go`](https://github.com/kubevela/vela-go-definitions/blob/main/workflowsteps/apply_component.go).
+
+<Tabs>
+<TabItem value="go" label="Go — defkit">
+
+```go title="workflowsteps/apply_component.go"
 package workflowsteps
 
 import "github.com/oam-dev/kubevela/pkg/definition/defkit"
@@ -670,7 +858,10 @@ func init() {
 }
 ```
 
-```yaml title="Generated — WorkflowStepDefinition (vela def apply-module --dry-run)"
+</TabItem>
+<TabItem value="cue" label="Generated — definition YAML">
+
+```yaml title="WorkflowStepDefinition (vela def apply-module --dry-run)"
 apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
@@ -693,6 +884,74 @@ spec:
         	// +usage=Specify the namespace
         	namespace: *"" | string
         }
+```
+
+</TabItem>
+<TabItem value="application" label="Application YAML">
+
+```yaml title="workflow-demo-app.yaml"
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: workflow-demo
+  namespace: default
+spec:
+  components:
+    - name: web-a
+      type: webservice
+      properties:
+        image: nginx:stable
+        ports: [{port: 80, expose: false}]
+    - name: web-b
+      type: webservice
+      properties:
+        image: nginx:stable
+        ports: [{port: 80, expose: false}]
+  workflow:
+    steps:
+      - name: deploy-a
+        type: apply-component
+        properties:
+          component: web-a
+      - name: deploy-b
+        type: apply-component
+        properties:
+          component: web-b
+```
+
+</TabItem>
+</Tabs>
+
+Apply and verify (output captured live from k3d):
+
+```shell
+vela def apply ./vela-templates/definitions/workflowstep/apply-component.cue
+vela up -f workflow-demo-app.yaml
+```
+
+```
+NAME            COMPONENT   TYPE         PHASE     HEALTHY   STATUS      AGE
+workflow-demo   web-a       webservice   running   true      Ready:1/1   51s
+```
+
+Both steps execute in declared order and the workflow status records the final phase per step:
+
+```shell
+$ kubectl get app workflow-demo -n default -o jsonpath='{.status.workflow.steps}' | python3 -m json.tool
+[
+    {
+        "id": "nox3bf5n8y",
+        "name": "deploy-a",
+        "phase": "succeeded",
+        "type": "apply-component"
+    },
+    {
+        "id": "394hsuj65t",
+        "name": "deploy-b",
+        "phase": "succeeded",
+        "type": "apply-component"
+    }
+]
 ```
 
 :::tip Key patterns per type
