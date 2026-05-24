@@ -838,17 +838,20 @@ Only use resource kinds that expose `.status.conditions` (Deployment, StatefulSe
 
  Name | Description | Type | Required | Default 
  ---- | ----------- | ---- | -------- | ------- 
+ includeCRDs | Install CRDs from the chart's `crds/` directory. Set to `false` to skip CRD installation on both install and upgrade. | bool | false | true 
  skipTests | Skip test resources | bool | false | true 
  skipHooks | Skip hook resources | bool | false | false 
  createNamespace | Create namespace if it doesn't exist | bool | false | true 
- timeout | Rendering and wait timeout | string | false | "5m" 
- maxHistory | Revisions to keep. Takes effect on upgrade; ignored on first install. | int | false | 10 
+ timeout | Rendering and wait timeout (Helm SDK uses one value for both) | string | false | "5m" 
+ maxHistory | Revisions to keep (upgrade-only; ignored on first install). | int | false | 10 
  atomic | Rollback on failure | bool | false | false 
- wait | Wait for resources to become ready before marking the workflow step complete | bool | false | false 
- force | Force resource updates. Takes effect on upgrade; ignored on first install. | bool | false | false 
- recreatePods | Recreate pods on upgrade. Ignored on first install. | bool | false | false 
- cleanupOnFail | Cleanup on failure. Takes effect on upgrade; ignored on first install. | bool | false | false 
+ wait | Wait for resources to become ready before marking the workflow step complete. See the note below on single-replica deployments. | bool | false | false 
+ force | Force resource updates | bool | false | false 
+ recreatePods | Recreate pods (upgrade-only; ignored on first install). | bool | false | false 
+ cleanupOnFail | Cleanup on failure (upgrade-only; ignored on first install). | bool | false | false 
  cache | Chart cache tuning | [cache](#cache-helmchart) | false |  
+
+> **Note on `wait` and `atomic` with single-replica deployments.** The Helm SDK's readiness probe for a Deployment checks `status.readyReplicas >= spec.replicas - maxUnavailable`. When a chart pins `strategy.rollingUpdate.maxUnavailable: 1` (common for staging/dev defaults) and `replicas: 1`, the right-hand side resolves to `0` and the probe is trivially satisfied even when the pod is broken. Consequence: `wait: true` returns immediately, and `atomic: true` never triggers a rollback on broken pods. The arithmetic only kicks in once `replicas > maxUnavailable`. For single-replica workloads where you actually want the wait/atomic safety net, either raise `replicas` to at least 2, lower `maxUnavailable` to `0`, or use a KubeVela `healthStatus` policy (see [healthStatus (helmchart)](#healthstatus-helmchart)) to gate the workflow step on a specific resource condition.
 
 
 #### cache (helmchart)
