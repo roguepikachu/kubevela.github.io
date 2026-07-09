@@ -1348,6 +1348,71 @@ spec:
  env | Declare the name of the env in policy. | string | true |  |  
 
 
+## Deploy-Components
+
+### Description
+
+Deploy each component to the cluster(s) resolved from its own topology policies. Applies are executed sequentially, one at a time unlike "deploy", there is no parallelism setting to configure.
+
+### Scope
+
+This step type is only valid in Application.
+
+### Examples (deploy-components)
+
+```yaml
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: deploy-components-example
+  namespace: examples
+spec:
+  components:
+    - name: web-on-local
+      type: webservice
+      properties:
+        image: nginx
+    - name: web-on-worker
+      type: webservice
+      properties:
+        image: nginx
+  policies:
+    - name: topology-local
+      type: topology
+      properties:
+        clusters: ["local"]
+    - name: topology-worker
+      type: topology
+      properties:
+        clusters: ["cluster-worker"]
+  workflow:
+    steps:
+      - name: deploy-components
+        type: deploy-components
+        properties:
+          components:
+            - name: web-on-local
+              policies: ["topology-local"]
+            - name: web-on-worker
+              policies: ["topology-worker"]
+```
+
+### Specification (deploy-components)
+
+
+ Name | Description | Type | Required | Default | Immutable 
+ ---- | ----------- | ---- | -------- | ------- | --------- 
+ components | Per-component mapping of which topology policies determine its target cluster(s). | [[]components](#components-deploy-components) | true |  |  
+
+
+#### components (deploy-components)
+
+ Name | Description | Type | Required | Default | Immutable 
+ ---- | ----------- | ---- | -------- | ------- | --------- 
+ name | The name of the component in the application to apply. | string | true |  |  
+ policies | Names of topology policies (declared at the Application level) used to resolve this component's target cluster(s). | []string | true |  |  
+
+
 ## Export-Data
 
 ### Description
