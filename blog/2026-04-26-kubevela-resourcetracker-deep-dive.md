@@ -21,7 +21,7 @@ KubeVela takes a different route. The Application controller doesn't watch Pods,
 A controller needs to know when its child resources are created, modified, or deleted. The standard way to get those notifications is to register an Informer per child type. That works fine when the set of child types is small and known. It doesn't work as well when your operator is a platform that can produce any resource type its users want.
 
 :::info The question
-Look at KubeVela's controller setup and you'll notice it doesn't watch Pods, Deployments, or Services. So how does it notice when one of them gets deleted and recreate it?
+Look at KubeVela's controller setup and you'll notice it doesn't watch Deployments, Services, or other rendered kinds. So how does it notice when a directly managed resource gets deleted and recreate it?
 :::
 
 ```go
@@ -46,7 +46,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 ```
 
 :::tip The answer
-KubeVela combines a **ResourceTracker** record with **periodic reconciliation** instead of watching child resources directly. The trade is real: you give up millisecond event-driven reaction and get back constant-memory, type-agnostic tracking.
+KubeVela combines a **ResourceTracker** record with **periodic reconciliation** instead of watching child resources directly. The trade is real: you give up millisecond event-driven reaction and get back type-agnostic tracking over a fixed watch set.
 :::
 
 ### The Traditional `.Owns()` Pattern
@@ -100,7 +100,7 @@ And you can't enumerate the types up front anyway. Users keep adding new CRDs th
 
 ### Architecture
 
-The ResourceTracker is a custom resource that holds a list of everything an Application has created. The Application controller watches three KubeVela CRDs only, and reads the ResourceTracker to know what's supposed to be in the cluster.
+The ResourceTracker is a cluster-scoped custom resource that holds a list of what an Application directly dispatched. The Application controller reads it to know what's supposed to be in the target clusters.
 
 ```text
 Application (your CR)
@@ -114,10 +114,10 @@ ResourceTracker (tracking metadata)
 
 ![Figure 2 — Three RT types per Application](/img/blog/resourcetracker-pattern/figure-2-rt-fanout.png)
 
-*Figure 2 — The three RT types each handle a different lifecycle. The `cluster` field on every entry is what enables multicluster references without OwnerReferences.*
+*Figure 2 — The three RT types each handle a different lifecycle. The `cluster` field on every entry is what enables multicluster references without OwnerReferences (a namespaced Application can't own a cluster-scoped ResourceTracker anyway, so the arrow is a logical relationship, not a Kubernetes OwnerReference).*
 
 :::info Key insight
-The Application controller watches three KubeVela CRDs: Application, ResourceTracker, and PolicyDefinition. The last one is there so that policy schema changes invalidate the cached renders. It does not watch Pods, Deployments, Services, or any other child. Three Informers total, no matter what users create.
+The Application controller watches three KubeVela CRDs: Application, ResourceTracker, and PolicyDefinition. The last one is there so that policy schema changes invalidate the cached renders. It does not watch Pods, Deployments, Services, or any other rendered child. Three watch sources for this controller, no matter what users create.
 :::
 
 ### ResourceTracker Types
@@ -138,21 +138,21 @@ This split lets KubeVela do version-aware garbage collection: clean up resources
 type ManagedResource struct {
     common.ClusterObjectReference `json:",inline"`  // apiVersion, kind, name, namespace, cluster
     common.OAMObjectReference     `json:",inline"`  // component, trait info
-    Data    *runtime.RawExtension   `json:"raw,omitempty"`     // full resource spec
+    Data    *runtime.RawExtension   `json:"raw,omitempty"`     // rendered manifest, when stored
     Deleted bool                    `json:"deleted,omitempty"` // marks for deletion
     SkipGC  bool                    `json:"skipGC,omitempty"`  // skip garbage collection
 }
 ```
 
-Each `ManagedResource` carries enough to identify the resource (for the existence check) and to recreate it (the full spec lives in `Data`). The `Deleted` flag is there for two-phase GC: a resource gets marked first, then deleted on a later pass, which leaves a window for rollback.
+Each `ManagedResource` carries enough to identify the resource, and usually stores the rendered manifest in `Data` so it can be recreated. `Data` is absent for metadata-only entries. The `Deleted` flag marks an entry for removal: StateKeep issues the delete in the same pass and prunes the entry afterward.
 
 :::info Design decision: storing full specs
-Because the full rendered spec is in `Data`, self-healing doesn't have to re-run CUE template rendering. The controller can `Apply()` the stored spec directly. That keeps the self-healing path independent of the rendering pipeline, which matters when one of those is broken and the other isn't.
+Because the rendered spec is in `Data`, self-healing doesn't have to re-run CUE template rendering. The controller can `Apply()` the stored manifest directly. That keeps the self-healing path independent of the rendering pipeline, which matters when one of those is broken and the other isn't. Entries stored without `Data` are metadata-only and StateKeep skips them.
 :::
 
 ## 3. Self-Healing Mechanism
 
-With no Informers on the children, the controller has nothing to react to when one gets deleted. So it doesn't react. It comes back on a timer and re-checks. This is eventual consistency, and it's a real departure from the event-driven model most operators use.
+With no Informer for a directly managed kind, the controller has nothing to react to when one gets deleted. So it doesn't react. It comes back on a timer and runs StateKeep. This is eventual consistency, and it's a real departure from the event-driven model most operators use.
 
 ### Periodic reconciliation
 
@@ -175,7 +175,7 @@ ApplicationReSyncPeriod = time.Minute * 5
 ```
 
 :::info Why 5 minutes?
-The default is **5 minutes**, not 30 seconds (some older docs say 30s; that's wrong for current versions). It's a deliberate choice: with thousands of Applications in a cluster, a 30s cadence would hammer the API server. Five minutes gives you reasonable detection latency without that cost. If you need faster recovery for things like Pod restarts, you already have it — Kubernetes' built-in ReplicaSet controller handles Pod recreation in seconds. KubeVela's self-healing is for the level above: re-rendering the full Application spec when something at the top has gone missing.
+The default is **5 minutes**, not 30 seconds (some older docs say 30s; that's wrong for current versions). It's a deliberate choice: with thousands of Applications in a cluster, a 30s cadence would hammer the API server. Five minutes gives you reasonable detection latency without that cost. If you need faster recovery for things like Pod restarts, you already have it — Kubernetes' built-in ReplicaSet controller handles Pod recreation in seconds. KubeVela's StateKeep path is for directly tracked resources such as the Deployment itself.
 :::
 
 ### Health check pipeline
@@ -196,12 +196,7 @@ func evalStatus(ctx, handler, appFile, appParser) bool {
 }
 ```
 
-The health pipeline does more than check whether things exist. For each tracked resource it:
-
-1. Fetches the resource from the API server using the reference in the ResourceTracker
-2. Runs a type-specific health check (Deployment readiness, Pod status, and so on)
-3. Compares actual state to the desired state stored in `Data` to detect drift
-4. Re-applies the desired state via server-side apply if drift is found
+Health evaluation is separate from StateKeep. StateKeep reads the current and root ResourceTrackers and passes each eligible stored manifest to KubeVela's applicator. The applicator creates a missing object or computes a client-side three-way patch for an existing one; it skips the write when the patch is empty. This is not Kubernetes server-side apply.
 
 ## 4. Tuning the ResourceTracker Reconcile Window
 
@@ -209,11 +204,11 @@ The 5-minute default from Section 3 isn't a fixed property of the system. The pe
 
 ![Figure 1 — Drift detection latency vs. --application-re-sync-period](/img/blog/resourcetracker-pattern/figure-1-reconcile-window.png)
 
-*Figure 1 — Each marker is one possible value of `--application-re-sync-period`. The bracket shows the worst-case time before KubeVela notices higher-level drift. Spacing is for clarity, not linear time.*
+*Figure 1 — Each marker is one possible value of `--application-re-sync-period`. The detection window is roughly the configured period, but it's best-effort, not a hard bound: queueing, client throttling, failed reconciles, and controller downtime can all push detection later. Deleting a Pod is a separate path, handled by its ReplicaSet in seconds. Spacing is for clarity, not linear time.*
 
 ### The flag — `--application-re-sync-period`
 
-The flag takes a Go `time.Duration` string (`30s`, `1m`, `15m`, …) and defaults to `5m`. There are two ways to set it depending on whether you run the binary directly or use the Helm chart.
+The flag takes a Go `time.Duration` string (`30s`, `1m`, `15m`, …) and defaults to `5m`. Set it globally through the binary or Helm chart. An individual Application can override it with the `app.oam.dev/reconcile-interval` annotation; invalid values or durations below `10s` fall back to the global value.
 
 **Direct CLI**
 
@@ -230,13 +225,13 @@ controllerArgs:
 
 ### Trade-offs
 
-The cost calculation is simple. On every cycle, the controller walks every `ManagedResource` in every `ResourceTracker`, does a `Get` per resource against the API server, and an `Apply` when drift is detected. The period is the divisor on the cluster-wide work rate.
+On every StateKeep cycle, the controller reads tracked resources and calls the applicator for eligible entries that contain `Data`. The applicator skips the write when its computed patch is empty. The period is the divisor on this recurring work.
 
 | Direction | What you gain | What you pay |
 |---|---|---|
-| **Shorter** (e.g. `1m`) | Faster recovery from higher-level drift — deleted Deployments, missing ConfigMaps, removed Services, mutated Ingresses. | API server reads scale roughly as `Σ tracked resources / period`. With 500 Apps × 8 resources × 60s period that is ~67 reads/sec just for health checks. Status updates and drift re-applies stack on top. |
-| **Default** (`5m`) | Balanced for typical fleets up to ~1000 Applications. | Drift detection latency ≤ 5 minutes. Pod-level drift unaffected (handled in milliseconds by Kubernetes' built-in controllers). |
-| **Longer** (e.g. `15m`) | Lower steady-state API server pressure on large fleets. Frees headroom to raise `--concurrent-reconciles` for spec-change throughput without overloading etcd. | Drift detection latency up to 15 minutes. A deleted Service, ConfigMap or Ingress stays missing for that window. Acceptable when the platform is trusted and you let lower-level controllers handle pod-level recovery. |
+| **Shorter** (e.g. `1m`) | Faster recovery from higher-level drift — deleted Deployments, missing ConfigMaps, removed Services, mutated Ingresses. | API server reads scale roughly as `Σ tracked resources / period`. With 500 Apps × 8 resources × 60s period that is ~67 StateKeep reads/sec. Status updates and patches stack on top. |
+| **Default** (`5m`) | Balanced for typical fleets up to ~1000 Applications. | Recovery normally waits for a scheduled reconcile and can take longer than 5 minutes when delayed. Pod-level recovery remains with Kubernetes' built-in controllers. |
+| **Longer** (e.g. `15m`) | Lower steady-state API server pressure on large fleets. Frees headroom to raise `--concurrent-reconciles` for spec-change throughput without overloading etcd. | A deleted Service, ConfigMap or Ingress normally stays missing for that window and possibly longer. Acceptable when lower-level controllers handle pod recovery. |
 
 ### Companion knobs
 
@@ -246,9 +241,9 @@ These flags all interact in this area. Keep them straight before changing anythi
 |---|---|---|
 | `--application-re-sync-period` | `5m` | Period between RT re-evaluation cycles. **This is the one you usually want.** Helm: `controllerArgs.reSyncPeriod`. |
 | `--concurrent-reconciles` | `4` | Worker count for the Application controller. Raise this if shortening the period creates a queue backlog. Helm: `concurrentReconciles`. |
-| `--informer-sync-period` | `10h` | Kubernetes Informer cache full-resync interval. Not related to the RT reconcile loop and almost never worth touching. |
-| `--kube-api-qps` | `50` | QPS limit on the controller's API client. If you raise `--concurrent-reconciles`, raise this proportionally or you will hit client-side throttling silently. |
-| `--kube-api-burst` | `100` | Burst limit on the API client. The flag's own help text recommends keeping it at `qps × 2`; bump it alongside `--kube-api-qps`. |
+| `--informer-sync-period` | `10h` | Informer handler-resync interval. Not the RT reconcile loop, and not a guaranteed full API re-list. Almost never worth touching. |
+| `--kube-api-qps` | `50` (binary) | QPS limit on the controller's API client. The Helm chart ships `400`. If you raise `--concurrent-reconciles`, raise this too or you will hit client-side throttling silently. |
+| `--kube-api-burst` | `100` (binary) | Burst limit on the API client. The Helm chart ships `600`. Bump it alongside `--kube-api-qps`. |
 
 ### Tuning recipes
 
@@ -262,46 +257,40 @@ Starting points, not benchmarks. Profile after any change. The right setting dep
 | Edge / quiet workloads, very high stability | `30m`+ | `4` | `50` / `100` (defaults) |
 
 :::warning Don't tune blindly
-Before shortening the period, check whether the drift you care about actually needs it. Pod restarts, `CrashLoopBackOff` recovery, Deployment scale-up — Kubernetes handles all of that in seconds without help from the RT loop. The RT period only matters when something deletes or modifies a top-level resource owned by the Application.
+Before shortening the period, check whether the drift you care about actually needs it. Pod restarts, `CrashLoopBackOff` recovery, Deployment scale-up — Kubernetes handles all of that in seconds without help from the RT loop. The RT period only matters when something deletes or modifies a resource directly tracked for the Application.
 
 If your postmortem says *"we lost a ConfigMap and didn't notice for five minutes"*, a shorter period helps. If it says *"a Pod CrashLooped"*, the period is irrelevant and you should be looking at probes, resource limits, or the image instead.
 :::
 
 ## 5. Complete Flow: Deletion to Recreation
 
-Walk through what happens when someone manually deletes a Pod that came from a KubeVela Application.
+Walk through what happens when someone manually deletes a Deployment that KubeVela directly dispatched.
 
-![Figure 3 — Pod deletion → 5-minute silence → periodic reconcile → re-apply](/img/blog/resourcetracker-pattern/figure-3-deletion-flow.png)
+![Figure 3 — A directly managed Deployment is deleted, then re-applied on the next periodic reconcile](/img/blog/resourcetracker-pattern/figure-3-deletion-flow.png)
 
-*Figure 3 — The Application controller hears nothing about the deletion (no Pod Informer) and only wakes up when the next re-sync timer fires. The five steps below trace each phase.*
+*Figure 3 — The App controller hears nothing when the Deployment is deleted, because it runs no Deployment Informer. It notices on the next re-sync and re-applies the stored manifest with a client-side three-way patch. The 5-minute mark is the default period, not a guaranteed ceiling: queueing or controller downtime can push it out.*
 
-**Step 1: Pod deletion**
+**Step 1: Deployment deletion**
 
-Someone runs `kubectl delete pod my-app-pod-1`. The API server drops the Pod from etcd. The Application controller hears nothing about it because there is no Pod Informer.
+Someone runs `kubectl delete deployment my-app`. The API server removes the Deployment. The Application controller hears nothing about it because there is no Deployment Informer. A Pod would be recreated by its ReplicaSet and is not the directly tracked resource in this example.
 
-If the Pod is owned by a Deployment, the ReplicaSet controller puts it back within seconds. That's not KubeVela's job. KubeVela's self-healing lives one layer above.
+**Step 2: Periodic reconciliation becomes eligible**
 
-**Step 2: Periodic reconciliation fires (up to 5 min later)**
-
-The re-sync timer eventually goes off. `Reconcile(ctx, Request{Name: "my-app"})` runs, and the work queue hands the Application to a worker.
+The re-sync timer eventually goes off. `Reconcile(ctx, Request{Name: "my-app"})` runs, and the work queue hands the Application to a worker. Queueing or controller downtime can extend the delay beyond the configured period.
 
 **Step 3: ResourceTracker lookup**
 
-The reconciler reads the Application CR and pulls its ResourceTracker(s). Each tracker entry is a `ManagedResource` carrying the full rendered spec in `Data`.
+The reconciler reads the Application CR and its current and root ResourceTrackers. Entries with `Data` carry the rendered manifest; metadata-only entries are not reapplied.
 
-**Step 4: Health check & drift detection**
+**Step 4: StateKeep and apply**
 
-For each `ManagedResource`, the controller does the obvious thing:
+For each eligible stored manifest, StateKeep calls the applicator:
 
 ```go
-r.Get(ctx, namespacedName, &obj)
-if apierrors.IsNotFound(err) {
-    // Resource should exist but doesn't! Re-apply it.
-    r.Apply(ctx, desiredSpec)
-}
+h.applicator.Apply(applyCtx, manifest, applyOptions...)
 ```
 
-If the resource is gone, re-apply it. If it's still there but drifted, server-side apply pushes the desired state back in.
+If the resource is gone, the applicator creates it. Otherwise it computes a client-side three-way patch and skips an empty patch.
 
 **Step 5: Recreation & requeue**
 
@@ -311,7 +300,7 @@ Anything missing or drifted gets re-applied, the Application status is rewritten
 return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 ```
 
-Then it goes back to sleep until the timer fires again.
+`RequeueAfter` schedules later work; it is not an upper-bound latency guarantee.
 
 :::info Layered self-healing
 KubeVela's self-healing rides on top of Kubernetes' built-in controllers, not in place of them. Delete a Pod under a Deployment and the ReplicaSet controller has it back in seconds. The 5-minute KubeVela loop is for the layer above that: deleted Deployments, modified Services, missing ConfigMaps, whole resource graphs that need to come back.
@@ -321,13 +310,13 @@ KubeVela's self-healing rides on top of Kubernetes' built-in controllers, not in
 
 Any controller that updates its own `status` during reconciliation can loop on itself: the status write fires an event, the event triggers another reconcile, that reconcile writes status again. KubeVela's Application controller is more exposed to this than most. A single pass can update workflow progress, health results, and the applied-resource list, each one a separate write.
 
-The fix is event predicates: filters that decide whether an update event is worth reacting to. The rule is simple — only reconcile when a human (or some external system) changed the spec, or when the periodic timer fires. Everything else is the controller talking to itself and can be dropped.
+The fix is event predicates: filters that decide whether an update event is worth reacting to. The rule is simple: only reconcile when a human (or some external system) changed the spec, or when the periodic timer fires. The predicate normalizes the controller's own status writes (workflow steps, applied resources, services) and then compares what's left, so a pass that only touched those fields is dropped.
 
 | What changed? | Decision | Why |
 |---|---|---|
 | User edited the `spec` (generation incremented) | ✓ Reconcile | User intent — always honor |
 | Periodic re-sync (old == new) | ✓ Reconcile | Health check trigger |
-| Workflow progress, phase transitions, applied resources | ✗ Skip | Controller's own writes — not user action |
+| Workflow steps, applied resources, services | ✗ Skip | Controller's own writes, normalized out before comparison |
 | `managedFields` or `resourceVersion` only | ✗ Skip | API server bookkeeping |
 
 :::info ResourceTracker: delete-only trigger
@@ -358,7 +347,7 @@ This works because the controller already reconciles Applications on a timer. It
 
 ![Figure 4 — Two paths from a child event to the Application reconcile queue](/img/blog/resourcetracker-pattern/figure-4-owns-vs-watches.png)
 
-*Figure 4 — `.Owns()` reads OwnerReferences from each child type's Informer. `.Watches()` reads ResourceTracker labels through the custom MapFunc `findObjectForResourceTracker`.*
+*Figure 4 — `.Owns()` reads OwnerReferences from each child type's Informer. `.Watches()` reads ResourceTracker labels through the custom MapFunc `findObjectForResourceTracker`. Note the delete-only optimization below: routine healing rides the periodic reconcile, not this event path.*
 
 ### `findObjectForResourceTracker`
 
@@ -380,20 +369,20 @@ func findObjectForResourceTracker(_ context.Context, rt client.Object) []reconci
 }
 ```
 
-Instead of reading the OwnerReference from a child's metadata, this function reads labels off the ResourceTracker (`app.oam.dev/name`, `app.oam.dev/namespace`) to find the owning Application. That breaks the dependency on Kubernetes' ownership model, which is what makes cross-namespace and cross-cluster references possible.
+Instead of reading the OwnerReference from a child's metadata, this function reads labels off the ResourceTracker (`app.oam.dev/name`, `app.oam.dev/namespace`) to find the owning Application. That breaks the dependency on Kubernetes' ownership model, which is what makes cross-namespace references possible. Cross-cluster is a separate mechanism: it comes from the `cluster` field in `ClusterObjectReference` and KubeVela's multicluster client, not from `.Watches()` alone.
 
 ## 8. Pattern Comparison
 
 | Aspect | Traditional `.Owns()` | KubeVela ResourceTracker |
 |---|---|---|
-| Informers needed | One per child type — O(n) | Three total — O(1) |
-| Memory cache | All instances of each watched type | Only Applications, ResourceTrackers & PolicyDefinitions |
-| Detection latency | Milliseconds (event-driven) | Up to 5 min (periodic) |
-| New CRD support | Requires code change + controller restart | Automatic — no changes needed |
+| Informers needed | One per child type (O(n)) | Three total (O(1)) |
+| Memory cache | All instances of each watched type | Applications, ResourceTrackers, and PolicyDefinitions, plus tracker payload that grows with the managed resources |
+| Detection latency | Milliseconds (event-driven) | Periodic (default 5 min), not a hard bound |
+| New CRD support | Requires code change + controller restart | Automatic, no changes needed |
 | Cross-namespace | ✗ Not supported (OwnerRef requires same namespace) | ✓ Supported via label-based mapping |
 | Cross-cluster | ✗ Not supported | ✓ Supported (`ClusterObjectReference`) |
 | API server watch streams | One per resource type | Three total |
-| Garbage collection | Kubernetes built-in (cascading delete via OwnerRef) | Custom GC with versioned tracking & two-phase delete |
+| Garbage collection | Kubernetes built-in (cascading delete via OwnerRef) | Custom GC with versioned tracking and two-phase delete |
 | Rollback support | Not built-in | Versioned ResourceTrackers enable revision history |
 | Implementation complexity | Simple (1 line per type) | Significant (custom CRD, GC logic, health pipeline) |
 
@@ -403,7 +392,7 @@ The ResourceTracker pattern isn't there for performance. It comes out of a few a
 
 ### 1. Type agnosticism
 
-KubeVela's whole pitch is that users write workloads as CUE templates — ComponentDefinitions, TraitDefinitions — and those templates can render any Kubernetes resource type. The controller can't know its child types at compile time. `.Owns()` requires every type to be registered at compile time. Those two facts don't fit together.
+KubeVela's whole pitch is that users write workloads as CUE templates (ComponentDefinitions, TraitDefinitions), and those templates can render any Kubernetes resource type. The controller can't know its child types at compile time. `.Owns()` requires every type to be registered up front. Those two facts don't fit together.
 
 ### 2. Multicluster resource management
 
@@ -411,23 +400,23 @@ KubeVela ships workloads across multiple clusters through the cluster gateway. O
 
 ### 3. Version-aware lifecycle management
 
-Versioned ResourceTrackers keep a record of which resources belonged to which Application revision. That gets you:
+Versioned ResourceTrackers record which resources belonged to a given Application version, keyed on its generation or an explicit `app.oam.dev/publishVersion`. That gets you:
 
-- **Rollback:** re-activate an older version's ResourceTracker (via the `app.oam.dev/publishVersion` annotation) and you have the exact resource set from that revision back.
+- **Rollback:** point the Application back at an older publish version and its ResourceTracker brings that exact resource set back.
 - **Safe GC:** old versioned RTs are kept around as history. Their resources are only garbage collected once a newer RT has taken responsibility for managing them.
 
 ### 4. Separation of concerns
 
-The ResourceTracker draws a line between the rendering pipeline (CUE evaluation, resource generation) and the dispatch pipeline (apply, track, self-heal). Rendering writes to the tracker. Dispatch reads from it. Neither has to know how the other works.
+The ResourceTracker draws a line between the rendering pipeline (CUE evaluation, resource generation) and the dispatch pipeline (apply, track, self-heal). Dispatch records the rendered manifests in the tracker before applying them. StateKeep reads them back later. Neither has to know how the other works.
 
 ### 5. Bounded resource consumption
 
-In a cluster with 100 CRD types and 50,000 total resources, the `.Owns()` approach would cache all 50,000 across 100 Informers. KubeVela caches Application, ResourceTracker, and PolicyDefinition objects only, which is usually orders of magnitude fewer. Memory tracks the number of Applications, not the number of managed resources or resource types.
+With 100 CRD types and 50,000 resources in a cluster, the `.Owns()` approach would cache all 50,000 across 100 Informers just to route child events. KubeVela's Application controller adds no Informer per rendered type, so it avoids that cache entirely. Memory still isn't constant, though: ResourceTracker count and payload grow with the number of Applications, their retained versions, and the manifests stored in `Data`.
 
 :::warning The trade-off is real
 There are real costs:
 
-- Detection latency up to 5 minutes (configurable via `ApplicationReSyncPeriod`)
+- Recovery waits for periodic reconciliation and can exceed the configured period
 - API server load from periodic GETs against every tracked resource
 - Custom GC logic instead of Kubernetes' built-in cascading delete
 - The controller has to handle stale RT data without breaking
@@ -480,7 +469,7 @@ For each child type you want to watch:
 - Look up the parent through a Lister
 - Enqueue the parent's key into the work queue
 
-Cost: roughly 100 lines per child type. Three child types = nine handler functions and around 300 lines.
+Cost: roughly 100 lines per child type. Three child types work out to about nine handler functions and around 300 lines.
 :::
 
 You also build the OwnerReference yourself when creating each child. Every field (`apiVersion`, `kind`, `name`, `uid`, `controller: true`) is yours to get right.
@@ -528,12 +517,12 @@ ctrl.NewControllerManagedBy(mgr).
     Watches(&v1beta1.PolicyDefinition{}, ...).
     Complete(r)
 // Three Informers total: Application, ResourceTracker, PolicyDefinition.
-// None of them is a managed child. Handles Pods, Deployments, Services,
+// None of them is a managed child. Handles Deployments, Services,
 // Istio VirtualServices, Crossplane RDS instances, user-defined CRDs.
 // Anything, dynamically, with zero .Owns() calls.
 ```
 
-Instead of registering a watch per type, the ResourceTracker records what got created. Instead of an OwnerReference-driven event mapping, the controller polls tracked resources on a timer to see whether they still exist. The ownership model moves from "embedded in the child" to "written down in a separate record".
+Instead of registering a watch per type, the ResourceTracker records what got dispatched. Instead of an OwnerReference-driven event mapping, the controller revisits tracked resources on a timer to see whether they still exist. The ownership model moves from "embedded in the child" to "written down in a separate record".
 
 ### The abstraction spectrum
 
@@ -570,12 +559,16 @@ Each level trades simplicity for flexibility:
 - Eventual consistency in the seconds-to-minutes range is acceptable
 
 :::tip The bottom line
-ResourceTracker isn't a replacement for `.Owns()`. It solves a different problem. Traditional operators know their child types at compile time. Platform engines like KubeVela don't. If you're writing a small operator, use `.Owns()`. If you're writing a platform that manages dynamic, user-defined workloads across cluster boundaries, the ResourceTracker pattern is worth studying as one way to do type-agnostic self-healing with bounded memory.
+ResourceTracker isn't a replacement for `.Owns()`. It solves a different problem. Traditional operators know their child types when registering watches. Platform engines like KubeVela don't. If you're writing a small operator, use `.Owns()`. If you're writing a platform that manages dynamic, user-defined workloads across cluster boundaries, the ResourceTracker pattern is worth studying as one way to do type-agnostic self-healing with a fixed managed-kind watch set.
 :::
 
 ## 12. Case Study: Crossplane RBAC Manager OOMs at Scale
 
 Up to here the argument has been theoretical: unbounded watches make controller memory grow with cluster size. Here's a production failure where that growth crossed the memory limit, and a look at why the same failure mode can't happen to KubeVela's Application controller.
+
+:::caution Source boundary
+The incident measurements below need a primary incident citation. Upstream source verifies the watch, cache, and list behavior, not the reported OOM counts or memory figures.
+:::
 
 ### What happened
 
@@ -583,9 +576,9 @@ A team running Crossplane across a fleet of clusters hit a confusing problem. Th
 
 - 56 `OOMKilled` events (exit code 137), roughly four per day
 - Each crash hit within about 20 seconds of pod start, during initial informer cache sync
-- Re-kills lined up with the controller's hourly `SyncPeriod` cache re-LIST, when controller-runtime re-fetches every watched object from the API server
+- Re-kills were observed near the controller's hourly `SyncPeriod`; that setting requests resync events and does not itself guarantee a full API re-list
 
-In the windows where the pod stayed up, steady-state memory was around 293 MiB, less than a seventh of the limit. So this wasn't a slow leak burning down to the limit. The pod ran comfortably for hours, then died in a single sub-minute spike during a re-LIST.
+In the windows where the pod stayed up, steady-state memory was around 293 MiB, less than a seventh of the limit. So this wasn't a slow leak burning down to the limit. The pod ran comfortably for hours, then died in a single sub-minute spike.
 
 What looked like a leak wasn't one. By every Crossplane-internal number the controller was fine. It was managing about 36 ProviderRevisions and 680 ClusterRoles, both well inside the design envelope. The thing that was actually driving memory growth was outside Crossplane's own resource graph, and none of those metrics caught it.
 
@@ -617,34 +610,35 @@ return ctrl.NewControllerManagedBy(mgr).
 
 `Watches(&appsv1.Deployment{}, ...)` registers an informer on Deployments. The informer's cache is what holds the objects, and there is no namespace filter, no field selector, and no `cache.ByObject` constraint anywhere in the manager setup. Every Deployment in the cluster, regardless of who owns it, gets materialized in the controller's informer cache. The handler-level owner filter narrows the *event* path; it does not narrow the *cache* path. Cache cost is `O(cluster Deployment count)`, not `O(Crossplane-managed resources)`.
 
-At 600 Deployments the cache fits comfortably inside 2 GiB. At 6,073, the periodic re-LIST occasionally pushes the working set above 2 GiB and the kernel's OOM-killer takes the process down. Same Helm chart, same providers, same memory limit. The only thing that changed was the count of unrelated Deployments, and that was enough to crash the controller.
+In the reported incident, the cache fit inside 2 GiB at roughly 600 Deployments and the working set crossed the limit at 6,073. The source confirms the unfiltered cache and list path, but proving that path caused the measured spike requires incident evidence such as heap profiles.
 
-### Why KubeVela doesn't have this failure mode
+### Why KubeVela's watch shape is different
 
-The KubeVela Application controller doesn't watch `Deployment` at all. Its `SetupWithManager` registers three Informers (Application, ResourceTracker, PolicyDefinition) and that set is fixed no matter what users build on top of it. Pods, Deployments, Services, Ingresses, custom CRDs — none of them sit in the controller's cache. The cluster can have 60 Deployments or 60,000 and the controller's memory footprint looks the same.
+The KubeVela Application controller doesn't watch `Deployment` at all. Its `SetupWithManager` registers three builder sources (Application, ResourceTracker, PolicyDefinition), and that set is fixed no matter what users build on top of it. Unstructured managed-resource reads bypass KubeVela's local cache by default unless a GVK is explicitly opted in.
 
-The property that matters: the controller's memory profile is decoupled from the cluster's resource inventory. It scales with the number of Applications you've defined, not with anything else in the cluster.
+Unrelated Deployments therefore do not enter this controller's Deployment cache. Memory still grows with Applications, ResourceTrackers, retained versions, and stored manifest payloads.
 
 | | Crossplane RBAC manager | KubeVela Application controller |
 |---|---|---|
 | Watches `Deployment` | Yes (unfiltered, cluster-wide) | No |
-| Cache footprint scales with | Total Deployments in cluster | Number of Applications defined |
-| Effect of growing cluster | Memory grows linearly → eventual OOM | No effect |
-| 6,000 Deployments outcome | OOMKilled, 56 restarts in 13 days | Unchanged |
-| Mitigation needed | Raise limit, lower concurrency, add filters | None — bounded by design |
+| Relevant cache footprint scales with | Deployments visible to the manager | Applications and tracker count/payload |
+| Effect of unrelated Deployments | They enter the Deployment cache | They do not enter this controller's Deployment cache |
+| 6,000 Deployments outcome | OOMKilled in the reported incident | Not established by source |
+| Mitigation needed | Cache selectors or other measured tuning | Different trade-off: tracker storage and periodic API work |
 
 ### The lesson
 
-Any controller that uses `.Owns()` or unfiltered `.Watches()` on a high-cardinality, cluster-scoped type inherits that type's growth as a memory cost. The bug isn't in the cluster size. It's in the watch set. The RBAC manager works at small scale because the watch set's cost stays under the limit. It fails at large scale because nothing in the design ever bounded that cost.
+Any controller that uses `.Owns()` or unfiltered `.Watches()` cluster-wide on a high-cardinality type inherits that visible inventory as a cache cost. The handler's owner filter does not filter the cache. In the reported incident, the watch set stayed under the limit at small scale and exceeded it at large scale.
 
-The ResourceTracker pattern doesn't try to filter the watch set. It removes the high-cardinality types from the watch set entirely and replaces direct watching with record-and-poll. That's why memory is bounded by what KubeVela manages, not by what else happens to exist in the cluster. It's not a stylistic choice. It's the design property that makes the failure mode above not apply.
+The ResourceTracker pattern removes rendered managed kinds from this controller's watch set and replaces direct watching with record-and-reconcile. That avoids this specific cache shape. It is not free: the cost shifts to ResourceTracker storage and periodic API work.
 
 ---
 
 **References**
 
-- KubeVela source: [github.com/kubevela/kubevela](https://github.com/kubevela/kubevela)
+- KubeVela source (audited at [`a59bd39`](https://github.com/kubevela/kubevela/tree/a59bd39e725ba35952cf828458143e4b2b0c4dd6)): [github.com/kubevela/kubevela](https://github.com/kubevela/kubevela)
 - Application controller: [`pkg/controller/core.oam.dev/v1beta1/application/application_controller.go`](https://github.com/kubevela/kubevela/blob/master/pkg/controller/core.oam.dev/v1beta1/application/application_controller.go)
 - ResourceTracker types: [`apis/core.oam.dev/v1beta1/resourcetracker_types.go`](https://github.com/kubevela/kubevela/blob/master/apis/core.oam.dev/v1beta1/resourcetracker_types.go)
 - Kubernetes sample-controller: [github.com/kubernetes/sample-controller](https://github.com/kubernetes/sample-controller)
 - controller-runtime: [github.com/kubernetes-sigs/controller-runtime](https://github.com/kubernetes-sigs/controller-runtime)
+- Crossplane RBAC manager: [binding reconciler](https://github.com/crossplane/crossplane/blob/231dd83a48fe7a4b9c06c8c94735c365f3da40b6/internal/controller/rbac/provider/binding/reconciler.go), [cache configuration](https://github.com/crossplane/crossplane/blob/231dd83a48fe7a4b9c06c8c94735c365f3da40b6/cmd/crossplane/rbac/rbac.go#L77-L86)
