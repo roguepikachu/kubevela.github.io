@@ -6,6 +6,39 @@ This doc aims to provide a migration guide from old versions to the new ones wit
 
 KubeVela has [release cadence](../../contributor/release-process.md) for every 2-3 months, we'll only maintain for the last 2 releases. As a result, you're highly recommended to upgrade along with the community. We'll strictly align with the [semver version rule](https://semver.org/) for compatibility.
 
+## From v1.10.x to v1.11.x
+
+v1.11.x upgrades the underlying CUE engine from v0.9.2 to v0.14.1. CUE v0.14 turns previously-tolerated syntax (list arithmetic, unquoted error field labels) into hard errors, and enables two new experimental evaluator behaviors (`evalv3`, `keepvalidators`) that can change how existing definitions behave.
+
+:::note
+This upgrade is non-breaking by default. The controller renders legacy definitions through an automatic compatibility layer, and the Helm chart disables the two breaking CUE experiments out of the box. See [CUE 0.14 Compatibility Layer](cue-compatibility-layer.md) for the full reference, flags, and CLI tooling to find and permanently fix affected definitions.
+:::
+
+1. Upgrade your kubevela chart
+
+```
+helm repo add kubevela https://kubevela.github.io/charts
+helm repo update
+helm upgrade -n vela-system --install kubevela kubevela/vela-core --version 1.11.0 --wait
+```
+
+2. (Optional, recommended) Scan for definitions relying on the compatibility layer, and permanently upgrade them:
+
+```
+vela def compatibility-check definitions
+vela def upgrade my-definition.cue
+```
+
+### Toolchain and dependency bumps
+
+v1.11.x also raises the Go toolchain and Kubernetes client library versions used to build and run KubeVela:
+
+- **Go**: `1.22.0` → `1.23.8` ([#6767](https://github.com/kubevela/kubevela/pull/6767))
+- **Kubernetes client libraries** (`k8s.io/api`, `k8s.io/client-go`, `k8s.io/apimachinery`, etc.): `v0.29.2` → `v0.31.10`, and `sigs.k8s.io/controller-runtime`: `v0.17.6` → `v0.19.7` ([#6837](https://github.com/kubevela/kubevela/pull/6837))
+- E2E tests and envtest now run against Kubernetes `v1.31` (previously `v1.29`)
+
+These are neither breaking for end users nor for existing Application/Definition YAML. They matter if you build custom controllers, providers, or addons against KubeVela's Go modules — bump your own `go.mod` and vendored `k8s.io`/`controller-runtime` versions accordingly to stay within a compatible range. The supported Kubernetes cluster version for running KubeVela itself remains `>= v1.19 && <= v1.31` (see [Kubernetes Requirements](../../installation/kubernetes.mdx)).
+
 ## From v1.8.x to v1.9.x
 
 :::caution
