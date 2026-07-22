@@ -44,43 +44,11 @@ Constraints for the experiment:
 - KubeVela `vela-core` **1.11.0**
 - Reference code: [roguepikachu/oam-ai-inference-poc](https://github.com/roguepikachu/oam-ai-inference-poc)
 
-> Figures below reference images under `/img/blog/oam-ai-inference/`. Capture guidance is in [`SCREENSHOTS.md`](/img/blog/oam-ai-inference/SCREENSHOTS.md).
-
 ## Architecture
-
-```text
-Application YAML (intent)
-        |
-        v
-+---------------- KubeVela / OAM ------------------+
-|  Component: inference-api                        |
-|  Traits: model-config, prompt-policy,            |
-|          inference-autoscaling, llmd-routing     |
-|  Policies: topology, override, quota intent      |
-|  Steps: wait-inference-ready, quota apply        |
-+--------------------------------------------------+
-        |
-        +-- Path A --> host Ollama
-        |
-        +-- Path B --> in-cluster simulator Service
-                       (llm-d / InferencePool seam)
-```
 
 ![Architecture overview](/img/blog/oam-ai-inference/01-architecture.png)
 
 *Figure 1. Application intent stays in OAM. Model execution stays in Ollama or an llm-d-shaped backend.*
-
-Request path:
-
-```text
-Client POST /v1/chat/completions
-  -> Service
-  -> inference-api pod
-       default MODEL from env
-       inject SYSTEM_PROMPT when missing
-  -> OpenAI-compatible backend
-  -> JSON completion
-```
 
 ![Request flow](/img/blog/oam-ai-inference/02-request-flow.png)
 
@@ -383,7 +351,7 @@ spec:
 
 ![Catalog compose output](/img/blog/oam-ai-inference/06-catalog-compose.png)
 
-*Figure 6. Generated Application with model and capability annotations.*
+*Figure 6. Catalog-composed `catalog-sre` Application healthy, including the autoscaling trait.*
 
 Developers choose presets. Platform engineers own the definitions behind them.
 
