@@ -1,7 +1,7 @@
 ---
 title: "Modeling AI inference with KubeVela and OAM"
 author: Ayush Kumar
-author_title: Platform engineer
+author_title: KubeVela Contributor
 author_url: https://github.com/roguepikachu
 author_image_url: https://github.com/roguepikachu.png
 tags: [KubeVela, OAM, AI, inference, llm-d, traits, platform, use-case]
@@ -353,7 +353,15 @@ spec:
 
 *Figure 6. Catalog-composed `catalog-sre` Application healthy, including the autoscaling trait.*
 
-Developers choose presets. Platform engineers own the definitions behind them.
+Developers choose presets. Platform engineers own the definitions behind them. That split is the harness: a curated path that makes the safe default the easy default.
+
+In practice the harness is the catalog plus the Trait and Policy definitions underneath it. A product team picks `llama32-1b` and `prompt-sre` instead of inventing Deployment YAML, env vars, and a private prompt store. Guardrails live in those platform-owned pieces. Examples from this POC:
+
+- **Behavioral:** `prompt-policy` sets system prompt and temperature so every replica of an SRE assistant starts from the same tone and conservatism.
+- **Operational:** `inference-autoscaling` and resource Traits bound replica count and CPU so a chatty client cannot quietly burn the cluster.
+- **Delivery:** `topology` / `override` and quota-oriented Policies keep staging from silently matching production backends or limits.
+
+The developer still ships an Application. The platform decides which models exist, which capabilities can be attached, and which knobs stay out of product YAML. That is harness engineering for inference: less freedom at the edges, more consistency where cost and safety matter.
 
 ## Multi-model and multi-env
 
@@ -461,7 +469,7 @@ Teams already using KubeVela for multi-env delivery get this almost for free: th
 
 ## Why KubeVela fits inference platforms
 
-**Thin platform packaging.** When many teams need the same inference facade with controlled options, OAM Traits plus a catalog beat copy-pasted Deployments. Product teams attach capabilities; platform teams own the definitions.
+**Thin platform packaging.** When many teams need the same inference facade with controlled options, OAM Traits plus a catalog beat copy-pasted Deployments. Product teams attach capabilities; platform teams own the definitions, the harness, and the guardrails baked into those definitions.
 
 **Stable app contract, swappable engines.** `/v1/chat/completions` at the edge and Trait-driven `BACKEND_URL` changes give a practical path toward llm-d without coupling product code to one runtime.
 
@@ -476,7 +484,7 @@ Teams already using KubeVela for multi-env delivery get this almost for free: th
 1. Prefer Traits that create or patch real Kubernetes behavior.
 2. Keep one OpenAI-compatible edge for applications.
 3. Leave model-runtime intelligence to purpose-built serving projects.
-4. Use catalog presets for UX; keep definitions platform-owned.
+4. Use catalog presets for UX; keep definitions, harness defaults, and guardrails platform-owned.
 5. Prefer built-in `topology` / `override` before inventing placement dialects.
 6. Keep abstractions tied to real objects, not renamed fields.
 
