@@ -22,7 +22,11 @@ jobs:
           cache: "npm"
           cache-dependency-path: ./actions/package-lock.json
       - name: Install Dependencies
-        run: npm ci --production --prefix ./actions
+        # NOTE: using `npm install` instead of `npm ci` as a workaround because the
+        # package-lock.json in oam-dev/kubevela-github-actions@v0.4.2 is out of sync
+        # with package.json, which makes `npm ci` fail with EUSAGE. Revert to `npm ci`
+        # once the lock file is fixed upstream (or a newer tag is pinned).
+        run: npm install --omit=dev --prefix ./actions
       - name: Run Commands
         uses: ./actions/commands
         with:
