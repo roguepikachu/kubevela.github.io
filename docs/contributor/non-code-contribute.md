@@ -15,7 +15,7 @@ You can pick up any of the following ways you're interested to contribute.
 Before submitting a new issue, try to make sure someone hasn't already reported the problem.
 Look through the [existing issues](https://github.com/kubevela/kubevela/issues) for similar issues.
 
-Report a bug by submitting a [bug report](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=kind%2Fbug&template=bug_report.md&title=).
+Report a bug by submitting a [bug report](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=type%2Fbug&template=bug_report.yml&title=).
 Make sure that you provide as much information as possible on how to reproduce the bug.
 
 Follow the issue template and add additional information that will help us replicate the problem.
@@ -26,7 +26,7 @@ If you believe you've found a security vulnerability, please read our [security 
 
 ## Suggest enhancements
 
-If you have an idea to improve KubeVela, submit an [feature request](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=kind%2Ffeature&template=feature_request.md&title=%5BFeature%5D).
+If you have an idea to improve KubeVela, submit an [feature request](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=type%2Ffeature&template=feature_request.yml&title=%5BFeature%5D).
 
 ## Triage issues
 

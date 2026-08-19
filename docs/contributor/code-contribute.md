@@ -6,6 +6,7 @@ You will learn the following things in the code contribution guide:
 
 - [How to Run KubeVela Locally](#run-kubevela-locally)
 - [How to Run VelaUX Locally](#run-velaux-locally)
+- [How to Sign Your Commits (DCO)](#sign-your-commits-dco)
 - [How to Create a pull request](#create-a-pull-request)
 - [Code Review Guide](#code-review)
 - [Formatting guidelines of pull request](#formatting-guidelines)
@@ -356,6 +357,44 @@ mv ~/.kube/config.save  ~/.kube/config
 make e2e-apiserver-test
 ```
 
+## Sign Your Commits (DCO)
+
+KubeVela uses the Developer Certificate of Origin instead of a CLA. The [DCO](https://developercertificate.org) is a short statement saying you wrote the code you're submitting, or otherwise have the right to submit it under the project's license. You agree to it by adding a `Signed-off-by` line to each commit, there's no separate document to sign. See the [Linux Foundation DCO page](https://wiki.linuxfoundation.org/dco) for background.
+
+Git can add that line for you with the `-s` flag:
+
+```shell
+git commit -s -m 'This is my commit message'
+```
+
+This produces a trailer like the following at the end of the commit message:
+
+```
+This is my commit message
+
+Signed-off-by: Random Developer <random@developer.example.org>
+```
+
+The email in the sign-off must match the email on your GitHub account, otherwise your pull request may not be able to merge.
+
+### Fixing a missing sign-off
+
+If only your most recent commit is missing the sign-off:
+
+```shell
+git commit --amend --signoff
+git push --force-with-lease
+```
+
+If several commits in your pull request need signing off, rebase the whole branch with sign-off. `<base-branch>` is the branch your pull request targets, usually `master`:
+
+```shell
+git rebase --signoff <base-branch>
+git push --force-with-lease
+```
+
+Since KubeVela squashes pull requests on merge, every source commit still needs a valid sign-off before the pull request can be merged. The squashed commit takes its message from the pull request rather than from any single source commit, so signing off one commit is not enough.
+
 ## Create a pull request
 
 We're excited that you're considering making a contribution to the KubeVela project!
@@ -505,17 +544,7 @@ Make sure that the title for your pull request uses the same format as the subje
 
 Before merge, All test CI should pass green.
 - The `codecov/project` should also pass. This means the coverage should not drop. Currently, the coverage of the Pull Request should have at least 70%.
-- KubeVela uses [DCO](https://wiki.linuxfoundation.org/dco) for contributor agreements. It requires you to sign-off every commit before the pull request being merged.
-  - Git provides a convenient flag `-s` in your commit command to sign-off automatically:
-    ```shell
-    git commit -s -m 'This is my commit message'
-    ```
-  - Contributors can also sign-off manually by adding a `Signed-off-by` line to commit messages as the following format, make sure the email matches your github account or the check bot won't pass.
-    ```shell
-    This is my commit message
-
-    Signed-off-by: Random Developer <random@developer.example.org>
-    ```
+- Make sure every commit is signed off per the [DCO](#sign-your-commits-dco) requirements.
 
 ## Update the docs & website
 

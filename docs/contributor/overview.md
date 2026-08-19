@@ -31,9 +31,19 @@ As a result, you can extend more powerful features for your platform.
 
 KubeVela project is initialized and maintained by the cloud native community since day 0 with [bootstrapping contributors from 8+ different organizations](https://github.com/kubevela/community/blob/main/OWNERS.md#bootstrap-contributors). We intend for KubeVela to have an open governance since the very beginning and donate the project to neutral foundation as soon as it's released. 
 
-To help us create a safe and positive community experience for all, we require all participants adhere to the CNCF Community [Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
+Two things apply to everyone. To help us create a safe and positive community experience for all, we require all participants adhere to the CNCF Community [Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md). And every contribution requires you to sign off your commits under the Developer Certificate of Origin, see [Sign Your Commits (DCO)](./code-contribute.md#sign-your-commits-dco) for how to do that.
 
 This part is a guide to help you through the process of contributing to KubeVela.
+
+### First-time contributor checklist
+
+If you're contributing code for the first time, work through these in order:
+
+1. Read the CNCF Community [Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
+2. Set up your local development environment by following [Run KubeVela Locally](./code-contribute.md#run-kubevela-locally).
+3. Pick up something to work on from the [good first issue](https://github.com/kubevela/kubevela/labels/good%20first%20issue) list.
+4. Sign off your commits with `git commit -s`, see [Sign Your Commits (DCO)](./code-contribute.md#sign-your-commits-dco).
+5. Run `make reviewable` before you open the pull request, see [Your first pull request](./code-contribute.md#your-first-pull-request).
 
 ### Become a contributor
 
@@ -44,6 +54,10 @@ we appreciate every effort you contribute to the community. Here are some exampl
 * Report and triage issues.
 * Organize meetups and user groups in your local area.
 * Help others by answering questions about KubeVela.
+
+### Communication
+
+The community talks on the CNCF Slack channel `#kubevela-dev`, on DingTalk and WeChat groups, and in the weekly community meetings. The joining links, group IDs and meeting schedule all live in one place, see [community communication](https://github.com/kubevela/community#communication).
 
 ### Non-code contribution
 
@@ -61,9 +75,15 @@ Unsure where to begin contributing to KubeVela codebase? Start by browsing issue
 
 Learn the [Release Process And Cadence](./release-process.md) to know when your code changes will be released.
 
-### Become a community member
+### Security
 
-If you're interested to become a community member or learn more about the governance, please check the [community membership](https://github.com/kubevela/community/blob/main/community-membership.md) for details.
+If you find a security vulnerability, report it privately as described in the [security policy](https://github.com/kubevela/kubevela/blob/master/SECURITY.md) rather than filing a public issue.
+
+### Governance & membership
+
+KubeVela has a role ladder that goes Member, Reviewer, Approver, Maintainer, with each step carrying more review and approval responsibility for the project. Roles are earned through sustained contribution, and the requirements for each one are written down in [community membership](https://github.com/kubevela/community/blob/main/community-membership.md).
+
+To see who currently holds which role, check [OWNERS](https://github.com/kubevela/community/blob/main/OWNERS.md). For how the project makes decisions, read the [governance](https://github.com/kubevela/community/blob/main/GOVERNANCE.md) document.
 
 ### Contribute to other community projects
 
