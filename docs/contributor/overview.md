@@ -57,7 +57,7 @@ we appreciate every effort you contribute to the community. Here are some exampl
 
 ### Communication
 
-The community talks on the CNCF Slack channel `#kubevela-dev`, on DingTalk and WeChat groups, and in the weekly community meetings. The joining links, group IDs and meeting schedule all live in one place, see [community communication](https://github.com/kubevela/community#communication).
+The community talks on the CNCF Slack channel [`#kubevela`](https://cloud-native.slack.com/archives/C01BLQ3HTJA), on DingTalk and WeChat groups, and in the weekly community meetings. The joining links, group IDs and meeting schedule all live in one place, see [community communication](https://github.com/kubevela/community#communication).
 
 ### Non-code contribution
 
