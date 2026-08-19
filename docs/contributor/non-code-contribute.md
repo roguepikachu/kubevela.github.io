@@ -24,9 +24,10 @@ Follow the issue template and add additional information that will help us repli
 
 If you believe you've found a security vulnerability, please read our [security policy](https://github.com/kubevela/kubevela/blob/master/SECURITY.md) for more details.
 
-## Suggest enhancements
+## Suggest features and enhancements
 
-If you have an idea to improve KubeVela, submit an [feature request](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=type%2Ffeature&template=feature_request.yml&title=%5BFeature%5D).
+If you have an idea for something that doesn't exist yet, submit a [feature request](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=type%2Ffeature&template=feature_request.yml&title=%5BFeature%5D).
+If you want to improve something that's already there, submit an [enhancement request](https://github.com/kubevela/kubevela/issues/new?assignees=&labels=type%2Fenhancement&template=enhancement_request.yml&title=%5BEnhancement%5D).
 
 ## Triage issues
 
